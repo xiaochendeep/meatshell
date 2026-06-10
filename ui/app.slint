@@ -243,6 +243,150 @@ component RdpPopout inherits Rectangle {
     }
 }
 
+component AuthPromptDialog inherits Rectangle {
+    in property <string> tab-id;
+    in property <string> title-text;
+    in property <string> detail-text;
+    in-out property <string> password-text;
+
+    callback submit(string, string);
+    callback cancel(string);
+
+    background: #00000080;
+    changed visible => { if (self.visible) { password-input.focus(); } }
+
+    TouchArea { clicked => { root.cancel(root.tab-id); } }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(parent.width - 48px, 420px);
+        height: 220px;
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000a0;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+
+            HorizontalLayout {
+                Text {
+                    text: root.title-text;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-lg;
+                    font-weight: 700;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 22px;
+                    height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: auth-close-ta.has-hover ? Theme.bg-hover : transparent;
+                    auth-close-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.cancel(root.tab-id); }
+                    }
+                    Text {
+                        text: "\u{E5CD}";
+                        font-family: "Material Icons";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Text {
+                text: root.detail-text;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                height: 42px;
+                background: Theme.bg-root;
+                border-width: 1px;
+                border-color: password-input.has-focus ? Theme.accent : Theme.border-subtle;
+                border-radius: Theme.radius-sm;
+
+                password-input := TextInput {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text <=> root.password-text;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-md;
+                    single-line: true;
+                    input-type: InputType.password;
+                    vertical-alignment: center;
+                    key-pressed(event) => {
+                        if (event.text == "\u{000a}" || event.text == "\u{000d}") {
+                            root.submit(root.tab-id, root.password-text);
+                            accept
+                        } else if (event.text == "\u{001b}") {
+                            root.cancel(root.tab-id);
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+
+                Rectangle {
+                    width: 86px;
+                    height: 34px;
+                    border-radius: Theme.radius-sm;
+                    background: cancel-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
+                    cancel-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.cancel(root.tab-id); }
+                    }
+                    Text {
+                        text: @tr("Cancel");
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-md;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    width: 94px;
+                    height: 34px;
+                    border-radius: Theme.radius-sm;
+                    background: submit-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    submit-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.submit(root.tab-id, root.password-text); }
+                    }
+                    Text {
+                        text: @tr("Connect");
+                        color: #ffffff;
+                        font-size: Theme.fs-md;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "meatshell";
     icon: @image-url("../assets/icon.png");
@@ -283,6 +427,11 @@ export component AppWindow inherits Window {
     in-out property <bool> about-open: false;     // centered About dialog
     in-out property <bool> rdp-popout-open: false; // centered RDP window
     in-out property <string> rdp-popout-tab-id;
+    in-out property <bool> auth-prompt-open: false;
+    in-out property <string> auth-prompt-tab-id;
+    in-out property <string> auth-prompt-title;
+    in-out property <string> auth-prompt-detail;
+    in-out property <string> auth-prompt-password;
     in property <string> download-dir;      // preset SFTP download folder ("" = ask)
     in property <[TransferInfo]> transfers; // download/upload records (newest first)
     in property <[string]> about-libs;      // open-source libraries used
@@ -366,6 +515,8 @@ export component AppWindow inherits Window {
     callback send-key(string /* tab-id */, string /* key */, bool /* ctrl */, bool /* alt */, bool /* shift */);
     callback rdp-key(string /* tab-id */, string /* key */, bool /* ctrl */, bool /* alt */, bool /* shift */);
     callback rdp-pointer(string /* tab-id */, string /* kind */, float /* x */, float /* y */, int /* button */, float /* delta */);
+    callback auth-prompt-submit(string /* tab-id */, string /* password */);
+    callback auth-prompt-cancel(string /* tab-id */);
     // Notifies Rust of a PTY resize (pixel dimensions; Rust converts to cols/rows).
     callback terminal-resize(string /* tab-id */, float /* width-px */, float /* height-px */);
 
@@ -1196,6 +1347,18 @@ export component AppWindow inherits Window {
         close => { root.rdp-popout-open = false; }
         rdp-key(key, ctrl, alt, shift) => { root.rdp-key(term.id, key, ctrl, alt, shift); }
         rdp-pointer(kind, x, y, button, delta) => { root.rdp-pointer(term.id, kind, x, y, button, delta); }
+    }
+
+    AuthPromptDialog {
+        visible: root.auth-prompt-open;
+        width: parent.width;
+        height: parent.height;
+        tab-id: root.auth-prompt-tab-id;
+        title-text: root.auth-prompt-title;
+        detail-text: root.auth-prompt-detail;
+        password-text <=> root.auth-prompt-password;
+        submit(tab, password) => { root.auth-prompt-submit(tab, password); }
+        cancel(tab) => { root.auth-prompt-cancel(tab); }
     }
 
     // --- Modal dialog -----------------------------------------------------

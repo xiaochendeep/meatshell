@@ -81,7 +81,6 @@ async fn run_rdp(
         addr
     )));
 
-    let can_direct_reconnect = crate::proxy::resolve(&session.proxy).is_none();
     let stream = connect_transport(&session, &host, port, &events).await?;
     let std_stream = stream.into_std().context("convert RDP stream")?;
     let std_stream = prepare_rdp_stream(std_stream)?;
@@ -93,7 +92,6 @@ async fn run_rdp(
             host,
             port,
             std_stream,
-            can_direct_reconnect,
             commands,
             blocking_events,
         )
@@ -133,32 +131,11 @@ fn run_rdp_blocking(
     host: String,
     port: u16,
     stream: StdTcpStream,
-    can_direct_reconnect: bool,
     mut commands: UnboundedReceiver<SessionCommand>,
     events: UnboundedSender<SessionEvent>,
 ) -> Result<()> {
-    let connected = match connect_rdp_client(&session, stream, true) {
-        Ok(connected) => connected,
-        Err(first_err) if can_direct_reconnect => {
-            let _ = events.send(SessionEvent::Status(
-                t(
-                    "RDP NLA 失败，尝试兼容模式...",
-                    "RDP NLA failed, trying compatibility mode...",
-                )
-                .into(),
-            ));
-            let retry = StdTcpStream::connect((host.as_str(), port))
-                .with_context(|| format!("RDP reconnect {host}:{port}"))?;
-            let retry = prepare_rdp_stream(retry)?;
-            connect_rdp_client(&session, retry, false)
-                .with_context(|| {
-                    format!("RDP connect {host}:{port} without NLA after NLA failed: {first_err:?}")
-                })?
-        }
-        Err(err) => {
-            return Err(err).with_context(|| format!("RDP connect {host}:{port}"))
-        }
-    };
+    let connected = connect_rdp_client(&session, stream)
+        .with_context(|| format!("RDP connect {host}:{port}"))?;
 
     #[cfg(unix)]
     let readiness_probe = connected.readiness_probe;
@@ -269,11 +246,7 @@ struct ConnectedRdp {
     readiness_probe: StdTcpStream,
 }
 
-fn connect_rdp_client(
-    session: &Session,
-    stream: StdTcpStream,
-    use_nla: bool,
-) -> Result<ConnectedRdp> {
+fn connect_rdp_client(session: &Session, stream: StdTcpStream) -> Result<ConnectedRdp> {
     #[cfg(unix)]
     let readiness_probe = stream
         .try_clone()
@@ -286,7 +259,7 @@ fn connect_rdp_client(
         .name("meatshell".to_string())
         .auto_logon(true)
         .check_certificate(false)
-        .use_nla(use_nla);
+        .use_nla(true);
 
     let client = connector.connect(stream).map_err(rdp_error)?;
     Ok(ConnectedRdp {
@@ -316,7 +289,30 @@ fn socket_readable(fd: RawFd, timeout: Duration) -> Result<bool> {
 }
 
 fn rdp_error(err: RdpError) -> anyhow::Error {
-    anyhow::anyhow!("{err:?}")
+    match err {
+        RdpError::RdpError(inner) if inner.kind() == RdpErrorKind::NotImplemented => {
+            anyhow::anyhow!(
+                "{}: {}",
+                t(
+                    "RDP 服务端只选择旧版 Standard RDP Security；当前内置 RDP 暂不支持这种老安全层，请在服务端开启 TLS / NLA / Negotiate",
+                    "RDP server selected legacy Standard RDP Security; the embedded RDP client does not support this old security layer yet. Enable TLS / NLA / Negotiate on the server"
+                ),
+                inner.message()
+            )
+        }
+        RdpError::RdpError(inner) if inner.kind() == RdpErrorKind::ProtocolNegFailure => {
+            anyhow::anyhow!(
+                "{}: {}",
+                t(
+                    "RDP 安全协议协商失败，请检查服务端是否启用 TLS / NLA / Negotiate",
+                    "RDP security negotiation failed; check whether TLS / NLA / Negotiate is enabled on the server"
+                ),
+                inner.message()
+            )
+        }
+        RdpError::RdpError(inner) => anyhow::anyhow!("{}: {inner:?}", inner.message()),
+        other => anyhow::anyhow!("{other:?}"),
+    }
 }
 
 fn split_rdp_user(user: &str) -> (String, String) {

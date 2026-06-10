@@ -371,13 +371,18 @@ pub(crate) async fn authenticate_password_with_fallback<H: Handler>(
         .await
         .context("password auth failed")?;
 
-    if password_auth.success() || !allows_keyboard_interactive(&password_auth) {
+    if password_auth.success() {
         return Ok(password_auth);
     }
 
-    authenticate_keyboard_interactive_with_password(handle, user, password)
-        .await
-        .context("keyboard-interactive auth failed")
+    if keyboard_allowed || allows_keyboard_interactive(&password_auth) {
+        return match authenticate_keyboard_interactive_with_password(handle, user, password).await {
+            Ok(interactive_auth) => Ok(interactive_auth),
+            Err(_) => Ok(password_auth),
+        };
+    }
+
+    Ok(password_auth)
 }
 
 fn allows_password(auth: &client::AuthResult) -> bool {

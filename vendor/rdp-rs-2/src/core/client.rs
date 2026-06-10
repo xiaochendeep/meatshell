@@ -246,6 +246,13 @@ impl Connector {
             self.blank_creds
         )?;
 
+        if let x224::Protocols::ProtocolRDP = x224.get_selected_protocols() {
+            return Err(Error::RdpError(RdpError::new(
+                RdpErrorKind::NotImplemented,
+                "server selected legacy Standard RDP Security (PROTOCOL_RDP), which is not supported by this embedded client",
+            )));
+        }
+
         // Create MCS layer and connect it
         let mut mcs = mcs::Client::new(x224);
         mcs.connect(self.name.clone(), self.width, self.height, self.layout)?;

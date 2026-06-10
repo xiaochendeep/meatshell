@@ -84,6 +84,10 @@ impl RdpError {
     pub fn kind(&self) -> RdpErrorKind {
         self.kind
     }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 #[derive(Debug)]

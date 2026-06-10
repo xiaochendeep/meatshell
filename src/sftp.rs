@@ -30,7 +30,10 @@ use tokio::task::JoinHandle;
 use crate::config::{AuthMethod, Session};
 use crate::host_keys::{HostKeyStatus, HostKeyVerifier};
 use crate::i18n::t;
-use crate::ssh::{format_mtime, format_size, RemoteEntry, RemoteTreeNode, SessionEvent};
+use crate::ssh::{
+    authenticate_password_with_fallback, format_mtime, format_size, RemoteEntry, RemoteTreeNode,
+    SessionEvent,
+};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -199,10 +202,11 @@ async fn run_sftp(
 
     // --- Authenticate (same method as the shell session) -------------------
     let authed = match session.auth {
-        AuthMethod::Password => handle
-            .authenticate_password(&session.user, session.password.as_str())
-            .await
-            .context("sftp password auth failed")?,
+        AuthMethod::Password => {
+            authenticate_password_with_fallback(&mut handle, &session.user, session.password.as_str())
+                .await
+                .context("sftp password auth failed")?
+        }
         AuthMethod::Key => {
             let raw = session.private_key_path.trim();
             if raw.is_empty() {

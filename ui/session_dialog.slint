@@ -128,7 +128,15 @@ export component SessionDialog inherits Rectangle {
                     SegOption {
                         label: "SSH";
                         active: root.draft-kind == "ssh";
-                        clicked => { root.draft-kind = "ssh"; }
+                        clicked => {
+                            if (root.draft-port == "" || root.draft-port == "23" || root.draft-port == "3389") {
+                                root.draft-port = "22";
+                            }
+                            if (root.draft-user == "" || root.draft-user == "administrator") {
+                                root.draft-user = "root";
+                            }
+                            root.draft-kind = "ssh";
+                        }
                     }
                     SegOption {
                         label: @tr("Serial");
@@ -138,12 +146,26 @@ export component SessionDialog inherits Rectangle {
                     SegOption {
                         label: "Telnet";
                         active: root.draft-kind == "telnet";
-                        clicked => { root.draft-kind = "telnet"; }
+                        clicked => {
+                            if (root.draft-port == "" || root.draft-port == "22" || root.draft-port == "3389") {
+                                root.draft-port = "23";
+                            }
+                            root.draft-kind = "telnet";
+                        }
                     }
                     SegOption {
                         label: "RDP";
                         active: root.draft-kind == "rdp";
-                        clicked => { root.draft-kind = "rdp"; }
+                        clicked => {
+                            if (root.draft-port == "" || root.draft-port == "22" || root.draft-port == "23") {
+                                root.draft-port = "3389";
+                            }
+                            if (root.draft-user == "" || root.draft-user == "root") {
+                                root.draft-user = "administrator";
+                            }
+                            root.draft-auth = "password";
+                            root.draft-kind = "rdp";
+                        }
                     }
                 }
             }
@@ -182,7 +204,7 @@ export component SessionDialog inherits Rectangle {
             // ── Login identity. SSH also exposes auth settings below. ───────
             if root.draft-kind == "ssh" || root.draft-kind == "rdp" : LabeledInput {
                 label: @tr("Username");
-                placeholder: "root";
+                placeholder: root.draft-kind == "rdp" ? "administrator" : "root";
                 value <=> root.draft-user;
             }
 

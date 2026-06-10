@@ -11,7 +11,7 @@ use anyhow::{anyhow, Context, Result};
 use russh::client::{self, Handle, Handler};
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
-use russh::{ChannelId, ChannelMsg, Disconnect};
+use russh::{ChannelId, ChannelMsg, Disconnect, MethodKind};
 use ssh_key::{HashAlg, PublicKey};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -309,6 +309,83 @@ pub fn spawn_session(
     )
 }
 
+pub(crate) async fn authenticate_password_with_fallback<H: Handler>(
+    handle: &mut Handle<H>,
+    user: &str,
+    password: &str,
+) -> Result<client::AuthResult> {
+    let authed = handle
+        .authenticate_password(user, password)
+        .await
+        .context("password auth failed")?;
+
+    if authed.success() || !allows_keyboard_interactive(&authed) {
+        return Ok(authed);
+    }
+
+    authenticate_keyboard_interactive_with_password(handle, user, password)
+        .await
+        .context("keyboard-interactive auth failed")
+}
+
+fn allows_keyboard_interactive(auth: &client::AuthResult) -> bool {
+    match auth {
+        client::AuthResult::Failure { remaining_methods, .. } => {
+            remaining_methods.contains(&MethodKind::KeyboardInteractive)
+        }
+        client::AuthResult::Success => false,
+    }
+}
+
+async fn authenticate_keyboard_interactive_with_password<H: Handler>(
+    handle: &mut Handle<H>,
+    user: &str,
+    password: &str,
+) -> Result<client::AuthResult> {
+    let mut response = handle
+        .authenticate_keyboard_interactive_start(user, None::<String>)
+        .await?;
+
+    for _ in 0..8 {
+        match response {
+            client::KeyboardInteractiveAuthResponse::Success => {
+                return Ok(client::AuthResult::Success);
+            }
+            client::KeyboardInteractiveAuthResponse::Failure {
+                remaining_methods,
+                partial_success,
+            } => {
+                return Ok(client::AuthResult::Failure {
+                    remaining_methods,
+                    partial_success,
+                });
+            }
+            client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                let answers = prompts
+                    .iter()
+                    .map(|prompt| {
+                        if !prompt.echo || prompt_requests_password(&prompt.prompt) {
+                            password.to_string()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect();
+                response = handle
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await?;
+            }
+        }
+    }
+
+    Err(anyhow!("too many keyboard-interactive prompts"))
+}
+
+fn prompt_requests_password(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("password") || lower.contains("passcode") || prompt.contains("密码")
+}
+
 async fn run_session(
     session: Session,
     mut commands: UnboundedReceiver<SessionCommand>,
@@ -354,10 +431,10 @@ async fn run_session(
 
     // --- Auth ----------------------------------------------------------
     let authed = match session.auth {
-        AuthMethod::Password => handle
-            .authenticate_password(&session.user, session.password.as_str())
-            .await
-            .context("password auth failed")?,
+        AuthMethod::Password => {
+            authenticate_password_with_fallback(&mut handle, &session.user, session.password.as_str())
+                .await?
+        }
         AuthMethod::Key => {
             let raw = session.private_key_path.trim();
             if raw.is_empty() {

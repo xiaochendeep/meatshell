@@ -1046,6 +1046,12 @@ fn wire_session_callbacks(
                 Secret::new(draft.password.to_string())
             };
             let kind = crate::config::SessionKind::from_str(&draft.kind.to_string());
+            let user = match kind {
+                crate::config::SessionKind::Rdp if draft.user.trim().is_empty() => {
+                    "administrator".to_string()
+                }
+                _ => draft.user.to_string(),
+            };
             // Auto-name: serial → port label, RDP/Telnet → protocol host, SSH → user@host.
             let auto_name = match kind {
                 crate::config::SessionKind::Serial => {
@@ -1053,7 +1059,7 @@ fn wire_session_callbacks(
                 }
                 crate::config::SessionKind::Telnet => format!("telnet {}", draft.host),
                 crate::config::SessionKind::Rdp => format!("rdp {}", draft.host),
-                crate::config::SessionKind::Ssh => format!("{}@{}", draft.user, draft.host),
+                crate::config::SessionKind::Ssh => format!("{}@{}", user, draft.host),
             };
             // Protocol defaults; serial ignores port.
             let default_port = match kind {
@@ -1074,7 +1080,7 @@ fn wire_session_callbacks(
                 } else {
                     draft.port as u16
                 },
-                user: draft.user.to_string(),
+                user,
                 auth: AuthMethod::from_str(&draft.auth.to_string()),
                 password,
                 // Store the key path with forward slashes uniformly.

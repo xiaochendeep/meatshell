@@ -22,10 +22,10 @@ chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.33"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
-# RSA support is disabled because the RustCrypto rsa crate is under
-# RUSTSEC-2023-0071 with no fixed release. Ed25519/ECDSA host and user keys
-# remain supported.
-russh = { version = "0.61", default-features = false, features = ["aws-lc-rs", "flate2"] }
+# RSA support is required for older OpenSSH / Windows hosts that only expose
+# RSA host keys. Keep `aws-lc-rs` for the symmetric/KEX backend and enable
+# russh's RSA verifier for host-key compatibility.
+russh = { version = "0.61", default-features = false, features = ["aws-lc-rs", "flate2", "rsa"] }
 ssh-key = "=0.7.0-rc.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

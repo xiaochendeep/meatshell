@@ -4,15 +4,17 @@
 //! on the shared Tokio runtime; commands come in via an MPSC channel and
 //! output lines are pushed back via an `UnboundedSender<SessionEvent>`.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use russh::client::{self, Handle, Handler};
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
 use russh::{ChannelId, ChannelMsg, Disconnect, MethodKind};
-use ssh_key::{HashAlg, PublicKey};
+use ssh_key::{Algorithm, HashAlg, PublicKey};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
@@ -309,6 +311,34 @@ pub fn spawn_session(
     )
 }
 
+pub(crate) fn ssh_client_config(inactivity_timeout: Duration) -> client::Config {
+    client::Config {
+        inactivity_timeout: Some(inactivity_timeout),
+        preferred: ssh_preferred_algorithms(),
+        ..<_>::default()
+    }
+}
+
+fn ssh_preferred_algorithms() -> russh::Preferred {
+    let mut preferred = russh::Preferred::default();
+    let mut keys = preferred.key.to_vec();
+
+    if let Some(pos) = keys
+        .iter()
+        .position(|algo| matches!(algo, Algorithm::Rsa { hash: None }))
+    {
+        let legacy_rsa = keys.remove(pos);
+        let insert_at = keys
+            .iter()
+            .position(|algo| matches!(algo, Algorithm::Rsa { .. }))
+            .unwrap_or(keys.len());
+        keys.insert(insert_at, legacy_rsa);
+    }
+
+    preferred.key = Cow::Owned(keys);
+    preferred
+}
+
 pub(crate) async fn authenticate_password_with_fallback<H: Handler>(
     handle: &mut Handle<H>,
     user: &str,
@@ -430,10 +460,7 @@ async fn run_session(
         session.user, session.host, session.port
     )));
 
-    let config = Arc::new(client::Config {
-        inactivity_timeout: Some(std::time::Duration::from_secs(60 * 10)),
-        ..<_>::default()
-    });
+    let config = Arc::new(ssh_client_config(Duration::from_secs(60 * 10)));
 
     let handler = ClientHandler {
         host_key: HostKeyVerifier::new(session.host.clone(), session.port),

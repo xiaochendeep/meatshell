@@ -139,8 +139,8 @@ meatshell/
   host key，后续 key 变化会拒绝连接。
 - RDP 会话在应用内直接连接和渲染桌面画面；SOCKS5 / HTTP CONNECT 代理与
   SSH/Telnet 共享同一套代理配置。
-- RSA 支持已关闭，以避开 `rsa` crate 的 RUSTSEC-2023-0071；请使用
-  Ed25519/ECDSA host key 和用户私钥。
+- 已启用 RSA host key 兼容，用于连接只提供 RSA 主机密钥的旧 OpenSSH /
+  Windows 主机；优先使用 Ed25519/ECDSA host key 和用户私钥。
 
 ## License
 

@@ -31,8 +31,8 @@ use crate::config::{AuthMethod, Session};
 use crate::host_keys::{HostKeyStatus, HostKeyVerifier};
 use crate::i18n::t;
 use crate::ssh::{
-    authenticate_password_with_fallback, format_mtime, format_size, RemoteEntry, RemoteTreeNode,
-    SessionEvent,
+    authenticate_password_with_fallback, format_mtime, format_size, ssh_client_config, RemoteEntry,
+    RemoteTreeNode, SessionEvent,
 };
 
 // ---------------------------------------------------------------------------
@@ -176,10 +176,7 @@ async fn run_sftp(
     let _ = events.send(SessionEvent::SftpStatus(t("SFTP 连接中...", "SFTP connecting...").into()));
 
     // Open a dedicated SSH connection for SFTP.
-    let config = Arc::new(client::Config {
-        inactivity_timeout: Some(std::time::Duration::from_secs(60 * 30)),
-        ..<_>::default()
-    });
+    let config = Arc::new(ssh_client_config(Duration::from_secs(60 * 30)));
 
     let addr = format!("{}:{}", session.host, session.port);
     let handler = SftpClientHandler {

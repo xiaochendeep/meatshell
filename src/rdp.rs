@@ -12,7 +12,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use rdp::core::client::Connector;
+use rdp::core::client::{Connector, RdpClient};
 use rdp::core::event::{BitmapEvent, KeyboardEvent, PointerButton, PointerEvent, RdpEvent};
 use rdp::model::error::{Error as RdpError, RdpErrorKind};
 use tokio::net::TcpStream;
@@ -81,18 +81,22 @@ async fn run_rdp(
         addr
     )));
 
+    let can_direct_reconnect = crate::proxy::resolve(&session.proxy).is_none();
     let stream = connect_transport(&session, &host, port, &events).await?;
     let std_stream = stream.into_std().context("convert RDP stream")?;
-    std_stream
-        .set_nonblocking(false)
-        .context("set RDP stream blocking")?;
-    std_stream
-        .set_nodelay(true)
-        .context("set RDP TCP_NODELAY")?;
+    let std_stream = prepare_rdp_stream(std_stream)?;
 
     let blocking_events = events.clone();
     let join = tokio::task::spawn_blocking(move || {
-        run_rdp_blocking(session, host, port, std_stream, commands, blocking_events)
+        run_rdp_blocking(
+            session,
+            host,
+            port,
+            std_stream,
+            can_direct_reconnect,
+            commands,
+            blocking_events,
+        )
     });
 
     join.await.context("RDP worker panicked")??;
@@ -129,29 +133,38 @@ fn run_rdp_blocking(
     host: String,
     port: u16,
     stream: StdTcpStream,
+    can_direct_reconnect: bool,
     mut commands: UnboundedReceiver<SessionCommand>,
     events: UnboundedSender<SessionEvent>,
 ) -> Result<()> {
+    let connected = match connect_rdp_client(&session, stream, true) {
+        Ok(connected) => connected,
+        Err(first_err) if can_direct_reconnect => {
+            let _ = events.send(SessionEvent::Status(
+                t(
+                    "RDP NLA 失败，尝试兼容模式...",
+                    "RDP NLA failed, trying compatibility mode...",
+                )
+                .into(),
+            ));
+            let retry = StdTcpStream::connect((host.as_str(), port))
+                .with_context(|| format!("RDP reconnect {host}:{port}"))?;
+            let retry = prepare_rdp_stream(retry)?;
+            connect_rdp_client(&session, retry, false)
+                .with_context(|| {
+                    format!("RDP connect {host}:{port} without NLA after NLA failed: {first_err:?}")
+                })?
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("RDP connect {host}:{port}"))
+        }
+    };
+
     #[cfg(unix)]
-    let readiness_probe = stream
-        .try_clone()
-        .context("clone RDP stream readiness probe")?;
+    let readiness_probe = connected.readiness_probe;
     #[cfg(unix)]
     let read_fd = readiness_probe.as_raw_fd();
-
-    let (domain, username) = split_rdp_user(&session.user);
-    let mut connector = Connector::new()
-        .screen(DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        .credentials(domain, username, session.password.as_str().to_string())
-        .name("meatshell".to_string())
-        .auto_logon(true)
-        .check_certificate(false)
-        .use_nla(true);
-
-    let mut client = connector
-        .connect(stream)
-        .map_err(rdp_error)
-        .with_context(|| format!("RDP connect {host}:{port}"))?;
+    let mut client = connected.client;
 
     let _ = events.send(SessionEvent::Connected);
     let _ = events.send(SessionEvent::Status(format!(
@@ -238,6 +251,49 @@ fn run_rdp_blocking(
         #[cfg(unix)]
         let _keep_probe_alive = &readiness_probe;
     }
+}
+
+fn prepare_rdp_stream(stream: StdTcpStream) -> Result<StdTcpStream> {
+    stream
+        .set_nonblocking(false)
+        .context("set RDP stream blocking")?;
+    stream
+        .set_nodelay(true)
+        .context("set RDP TCP_NODELAY")?;
+    Ok(stream)
+}
+
+struct ConnectedRdp {
+    client: RdpClient<StdTcpStream>,
+    #[cfg(unix)]
+    readiness_probe: StdTcpStream,
+}
+
+fn connect_rdp_client(
+    session: &Session,
+    stream: StdTcpStream,
+    use_nla: bool,
+) -> Result<ConnectedRdp> {
+    #[cfg(unix)]
+    let readiness_probe = stream
+        .try_clone()
+        .context("clone RDP stream readiness probe")?;
+
+    let (domain, username) = split_rdp_user(&session.user);
+    let mut connector = Connector::new()
+        .screen(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+        .credentials(domain, username, session.password.as_str().to_string())
+        .name("meatshell".to_string())
+        .auto_logon(true)
+        .check_certificate(false)
+        .use_nla(use_nla);
+
+    let client = connector.connect(stream).map_err(rdp_error)?;
+    Ok(ConnectedRdp {
+        client,
+        #[cfg(unix)]
+        readiness_probe,
+    })
 }
 
 #[cfg(unix)]

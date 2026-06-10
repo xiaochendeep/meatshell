@@ -4,7 +4,7 @@ import { LabeledInput, PrimaryButton, GhostButton } from "widgets.slint";
 export struct SessionDraft {
     id: string,
     name: string,
-    kind: string,      // "ssh" | "serial" | "telnet"
+    kind: string,      // "ssh" | "serial" | "telnet" | "rdp"
     host: string,
     port: int,
     user: string,
@@ -46,7 +46,7 @@ component SegOption inherits Rectangle {
     }
 }
 
-// Modal dialog for creating / editing a session (SSH / Serial / Telnet).
+// Modal dialog for creating / editing a session (SSH / Serial / Telnet / RDP).
 // The dialog is purely presentational — it stores values in mutable
 // properties and emits `submit` / `cancel` callbacks up to the main window.
 export component SessionDialog inherits Rectangle {
@@ -140,6 +140,11 @@ export component SessionDialog inherits Rectangle {
                         active: root.draft-kind == "telnet";
                         clicked => { root.draft-kind = "telnet"; }
                     }
+                    SegOption {
+                        label: "RDP";
+                        active: root.draft-kind == "rdp";
+                        clicked => { root.draft-kind = "rdp"; }
+                    }
                 }
             }
 
@@ -156,7 +161,7 @@ export component SessionDialog inherits Rectangle {
                 value <=> root.draft-group;
             }
 
-            // ── SSH / Telnet share host + port ──────────────────────────────
+            // ── Network transports share host + port ────────────────────────
             if root.draft-kind != "serial" : HorizontalLayout {
                 spacing: 10px;
                 LabeledInput {
@@ -167,14 +172,15 @@ export component SessionDialog inherits Rectangle {
                 }
                 LabeledInput {
                     label: @tr("Port");
-                    placeholder: root.draft-kind == "telnet" ? "23" : "22";
+                    placeholder: root.draft-kind == "telnet" ? "23"
+                        : root.draft-kind == "rdp" ? "3389" : "22";
                     value <=> root.draft-port;
                     horizontal-stretch: 1;
                 }
             }
 
-            // ── SSH-only: user + auth ───────────────────────────────────────
-            if root.draft-kind == "ssh" : LabeledInput {
+            // ── Login identity. SSH also exposes auth settings below. ───────
+            if root.draft-kind == "ssh" || root.draft-kind == "rdp" : LabeledInput {
                 label: @tr("Username");
                 placeholder: "root";
                 value <=> root.draft-user;
@@ -319,7 +325,7 @@ export component SessionDialog inherits Rectangle {
                 }
             }
 
-            // ── Optional outbound proxy (SSH / Telnet only) ─────────────────
+            // ── Optional outbound proxy (SSH / Telnet / RDP) ────────────────
             if root.draft-kind != "serial" : VerticalLayout {
                 spacing: 4px;
                 Text {
@@ -340,7 +346,7 @@ export component SessionDialog inherits Rectangle {
                 }
                 Text {
                     text: root.draft-proxy-type == "none"
-                        ? @tr("No proxy — use $ALL_PROXY or connect directly")
+                        ? @tr("No proxy — connect directly")
                         : @tr("Format: host:port  (with auth: user:pass@host:port)");
                     color: Theme.text-muted;
                     font-size: Theme.fs-xs;

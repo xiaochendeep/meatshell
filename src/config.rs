@@ -89,6 +89,8 @@ pub enum SessionKind {
     Serial,
     /// Plain Telnet over TCP, for legacy network gear (#17).
     Telnet,
+    /// Remote Desktop Protocol via the platform RDP client and a local tunnel.
+    Rdp,
 }
 
 impl SessionKind {
@@ -97,6 +99,7 @@ impl SessionKind {
             SessionKind::Ssh => "ssh",
             SessionKind::Serial => "serial",
             SessionKind::Telnet => "telnet",
+            SessionKind::Rdp => "rdp",
         }
     }
 
@@ -104,6 +107,7 @@ impl SessionKind {
         match s {
             "serial" => SessionKind::Serial,
             "telnet" => SessionKind::Telnet,
+            "rdp" => SessionKind::Rdp,
             _ => SessionKind::Ssh,
         }
     }
@@ -174,7 +178,7 @@ pub struct Session {
     pub group: String,
 
     // --- Transport ----------------------------------------------------------
-    /// SSH (default), Serial, or Telnet. Absent in old config files → Ssh.
+    /// SSH (default), Serial, Telnet, or RDP. Absent in old config files → Ssh.
     #[serde(default)]
     pub kind: SessionKind,
 

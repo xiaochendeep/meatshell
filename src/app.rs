@@ -1045,18 +1045,20 @@ fn wire_session_callbacks(
                 Secret::new(draft.password.to_string())
             };
             let kind = crate::config::SessionKind::from_str(&draft.kind.to_string());
-            // Auto-name: serial → port label, otherwise user@host.
+            // Auto-name: serial → port label, RDP/Telnet → protocol host, SSH → user@host.
             let auto_name = match kind {
                 crate::config::SessionKind::Serial => {
                     format!("{} @{}", draft.serial_port, draft.baud_rate)
                 }
-                _ => format!("{}@{}", draft.user, draft.host),
+                crate::config::SessionKind::Telnet => format!("telnet {}", draft.host),
+                crate::config::SessionKind::Rdp => format!("rdp {}", draft.host),
+                crate::config::SessionKind::Ssh => format!("{}@{}", draft.user, draft.host),
             };
-            // Telnet defaults to port 23, SSH to 22; serial ignores port.
-            let default_port = if kind == crate::config::SessionKind::Telnet {
-                23
-            } else {
-                22
+            // Protocol defaults; serial ignores port.
+            let default_port = match kind {
+                crate::config::SessionKind::Telnet => 23,
+                crate::config::SessionKind::Rdp => 3389,
+                _ => 22,
             };
             let new_session = Session {
                 id,
@@ -1167,8 +1169,9 @@ fn wire_session_callbacks(
                     format!("{} @{}", session.serial_port, session.baud_rate)
                 }
                 SessionKind::Telnet => format!("telnet {}:{}", session.host, session.port),
+                SessionKind::Rdp => format!("rdp {}:{}", session.host, session.port),
             };
-            // Serial / Telnet have no SFTP side-channel.
+            // Non-SSH transports have no SFTP side-channel.
             let has_sftp = session.kind == SessionKind::Ssh;
 
             // Seed the per-tab status so the sidebar shows "连接中 host" the
@@ -1239,7 +1242,7 @@ fn wire_session_callbacks(
                 w.set_active_tab_id(tab_id.clone().into());
             }
 
-            // Spawn SSH shell worker.
+            // Spawn the transport worker.
             //
             // Pass the current best-known terminal dimensions so the remote PTY
             // is opened at (approximately) the right size. The resize callback
@@ -1266,6 +1269,11 @@ fn wire_session_callbacks(
                     initial_cols,
                     initial_rows,
                 ),
+                SessionKind::Rdp => crate::rdp::spawn_rdp_session(
+                    runtime.handle(),
+                    tab_id.clone(),
+                    session.clone(),
+                ),
             };
             handles.borrow_mut().insert(tab_id.clone(), handle);
 
@@ -1273,7 +1281,7 @@ fn wire_session_callbacks(
             // The SFTP worker pushes SessionEvent::SftpEntries / SftpStatus
             // back via the same receiver channel (rx) — no second receiver
             // needed because spawn_sftp accepts an UnboundedSender clone.
-            // Only SSH sessions get an SFTP side-channel; Serial / Telnet skip it.
+            // Only SSH sessions get an SFTP side-channel.
             let sftp_evt_tx = if has_sftp {
                 // spawn_session doesn't expose its event sender, so SFTP gets its
                 // own channel; the dedicated pump below merges its events in.

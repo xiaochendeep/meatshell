@@ -62,6 +62,8 @@ xattr -dr com.apple.quarantine meatshell     # 去掉「未签名应用」的 Ga
     / `~/.config/meatshell/sessions.json`（Linux）
     / `~/Library/Application Support/meatshell/sessions.json`（macOS）
 - [x] SSH 连接骨架（`russh`，纯 Rust 实现，支持密码 + 私钥）
+- [x] Telnet / RDP 会话入口（RDP 通过系统客户端打开，支持本地代理隧道）
+- [x] SSH / Telnet / RDP 显式代理：直连、SOCKS5、HTTP CONNECT
 - [x] 行缓冲终端视图（输入一行 → 回车发送）
 
 ### v0.2
@@ -86,6 +88,7 @@ xattr -dr com.apple.quarantine meatshell     # 去掉「未签名应用」的 Ga
 | UI            | [Slint](https://slint.dev)（纯 Rust 编译，无 GC）                 |
 | 异步运行时    | [`tokio`](https://tokio.rs)                                       |
 | SSH 协议      | [`russh`](https://crates.io/crates/russh)（无 libssh 依赖）       |
+| RDP 协议      | 系统 RDP 客户端（macOS 可用 Microsoft Remote Desktop / Windows App） |
 | 系统指标      | [`sysinfo`](https://crates.io/crates/sysinfo)                     |
 | 序列化        | `serde` + `serde_json`                                            |
 | 日志          | `tracing` + `tracing-subscriber`                                  |
@@ -119,6 +122,10 @@ meatshell/
     ├── app.rs               # UI ↔ 后端桥接
     ├── config.rs            # 会话 JSON 持久化
     ├── system.rs            # CPU / 内存 / 网络采样
+    ├── proxy.rs             # SOCKS5 / HTTP CONNECT 出站代理
+    ├── rdp.rs               # RDP 本地隧道 + 系统客户端启动
+    ├── telnet.rs            # Telnet 会话 worker
+    ├── serial.rs            # 串口会话 worker
     └── ssh.rs               # SSH 会话 worker
 ```
 
@@ -130,6 +137,8 @@ meatshell/
   `slint::invoke_from_event_loop` 回调。
 - SSH/SFTP 使用应用配置目录里的 `known_hosts` 做 TOFU 校验：首次连接记录
   host key，后续 key 变化会拒绝连接。
+- RDP 会话依赖系统 RDP 客户端显示桌面画面；MeatShell 负责本地 loopback
+  隧道和代理转发，不会把 RDP 密码写入临时 `.rdp` 文件。
 - RSA 支持已关闭，以避开 `rsa` crate 的 RUSTSEC-2023-0071；请使用
   Ed25519/ECDSA host key 和用户私钥。
 

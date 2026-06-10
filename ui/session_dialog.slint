@@ -215,6 +215,13 @@ export component SessionDialog inherits Rectangle {
                 value <=> root.draft-password;
             }
 
+            if root.draft-kind == "rdp" : LabeledInput {
+                label: @tr("Password");
+                placeholder: root.is-editing ? @tr("Leave blank to keep the current password") : "••••••••";
+                password: true;
+                value <=> root.draft-password;
+            }
+
             if root.draft-kind == "ssh" && root.draft-auth == "key" : VerticalLayout {
                 spacing: 4px;
                 Text {

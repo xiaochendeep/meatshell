@@ -37,6 +37,7 @@ export struct TransferInfo {
 
 export struct TerminalState {
     id: string,
+    is-rdp: bool,
     status: string,
     spans: [TermSpan],     // coloured runs of the visible terminal screen
     cursor-row: int,       // cursor cell on the grid
@@ -45,6 +46,11 @@ export struct TerminalState {
     is-alt-screen: bool,
     find-matches: [TermMatch], // search-highlight rectangles
     selection: [TermMatch],    // drag-selection highlight rectangles
+
+    // RDP framebuffer state
+    rdp-frame: image,
+    rdp-width: int,
+    rdp-height: int,
 
     // SFTP panel state
     sftp-path: string,
@@ -173,6 +179,8 @@ export component AppWindow inherits Window {
 
     // Raw keystroke forwarding: Rust converts key+modifiers to PTY bytes.
     callback send-key(string /* tab-id */, string /* key */, bool /* ctrl */, bool /* alt */, bool /* shift */);
+    callback rdp-key(string /* tab-id */, string /* key */, bool /* ctrl */, bool /* alt */, bool /* shift */);
+    callback rdp-pointer(string /* tab-id */, string /* kind */, float /* x */, float /* y */, int /* button */, float /* delta */);
     // Notifies Rust of a PTY resize (pixel dimensions; Rust converts to cols/rows).
     callback terminal-resize(string /* tab-id */, float /* width-px */, float /* height-px */);
 
@@ -304,6 +312,7 @@ export component AppWindow inherits Window {
                     width: term.id == root.active-tab-id ? parent.width : 0px;
                     height: term.id == root.active-tab-id ? parent.height : 0px;
                     tab-id: term.id;
+                    is-rdp: term.is-rdp;
                     status-line: term.status;
                     spans: term.spans;
                     cursor-row: term.cursor-row;
@@ -312,6 +321,9 @@ export component AppWindow inherits Window {
                     is-alt-screen: term.is-alt-screen;
                     find-matches: term.find-matches;
                     selection: term.selection;
+                    rdp-frame: term.rdp-frame;
+                    rdp-width: term.rdp-width;
+                    rdp-height: term.rdp-height;
                     sftp-panel-height <=> root.sftp-panel-height;
                     sftp-path: term.sftp-path;
                     sftp-entries: term.sftp-entries;
@@ -319,6 +331,8 @@ export component AppWindow inherits Window {
                     sftp-loading: term.sftp-loading;
                     sftp-tree-nodes: term.sftp-tree-nodes;
                     send-key(key, ctrl, alt, shift) => { root.send-key(term.id, key, ctrl, alt, shift) }
+                    rdp-key(key, ctrl, alt, shift) => { root.rdp-key(term.id, key, ctrl, alt, shift) }
+                    rdp-pointer(kind, x, y, button, delta) => { root.rdp-pointer(term.id, kind, x, y, button, delta) }
                     terminal-resize(w, h) => { root.terminal-resize(term.id, w, h) }
                     sftp-navigate(path) => { root.sftp-navigate(term.id, path); }
                     sftp-download(path) => { root.sftp-download(term.id, path); }

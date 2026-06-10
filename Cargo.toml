@@ -42,6 +42,11 @@ zeroize = "1"
 # (HTTP CONNECT proxies are handled in src/proxy.rs without an extra crate.)
 tokio-socks = "0.5"
 base64 = "0.22"
+# Direct in-app RDP client support. rdp-rs performs the protocol handshake,
+# bitmap decoding, and input packets; MeatShell supplies the Slint framebuffer
+# and optional SOCKS5/HTTP transport.
+rdp-rs-2 = { path = "vendor/rdp-rs-2" }
+libc = "0.2"
 # Enumerate installed system fonts for the Interface (font) settings picker.
 fontdb = "0.16"
 # Cross-platform serial port access for the Serial session type (#14, #17).

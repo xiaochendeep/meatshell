@@ -151,6 +151,15 @@ fn url_decode(s: &str) -> String {
 pub enum SessionCommand {
     /// Send raw bytes directly to the PTY (individual keystrokes, no modification).
     RawInput(Vec<u8>),
+    /// Send a UI key event to an in-app RDP session.
+    RdpKey {
+        text: String,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+    },
+    /// Send a UI pointer event to an in-app RDP session.
+    RdpPointer(RdpPointerEvent),
     /// Notify the remote PTY of a terminal resize.
     Resize(u32, u32),
     /// Gracefully disconnect and drop the session.
@@ -168,6 +177,12 @@ pub enum SessionEvent {
     Connected,
     /// Connection closed (either cleanly or after an error).
     Closed(String),
+    /// A full RDP framebuffer image in straight RGBA8 order.
+    RdpFrame {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
     /// Remote machine resource sample (from the monitor channel).
     /// Memory/swap are in KiB (as reported by /proc/meminfo).
     ResourceStats {
@@ -206,6 +221,14 @@ pub enum SessionEvent {
     },
 }
 
+#[derive(Debug, Clone)]
+pub enum RdpPointerEvent {
+    Move { x: u16, y: u16 },
+    Down { x: u16, y: u16, button: u8 },
+    Up { x: u16, y: u16, button: u8 },
+    Wheel { x: u16, y: u16, delta: i16 },
+}
+
 /// Handle retained by the UI layer to talk to a running session.
 pub struct SessionHandle {
     #[allow(dead_code)] // used by future resize / reconnect flows
@@ -218,6 +241,19 @@ pub struct SessionHandle {
 impl SessionHandle {
     pub fn send_raw(&self, bytes: Vec<u8>) {
         let _ = self.commands.send(SessionCommand::RawInput(bytes));
+    }
+
+    pub fn send_rdp_key(&self, text: String, ctrl: bool, alt: bool, shift: bool) {
+        let _ = self.commands.send(SessionCommand::RdpKey {
+            text,
+            ctrl,
+            alt,
+            shift,
+        });
+    }
+
+    pub fn send_rdp_pointer(&self, event: RdpPointerEvent) {
+        let _ = self.commands.send(SessionCommand::RdpPointer(event));
     }
 
     pub fn resize(&self, cols: u32, rows: u32) {
@@ -457,6 +493,8 @@ async fn run_session(
                     Some(SessionCommand::Resize(cols, rows)) => {
                         let _ = channel.window_change(cols, rows, 0, 0).await;
                     }
+                    Some(SessionCommand::RdpKey { .. })
+                    | Some(SessionCommand::RdpPointer(_)) => {}
                     Some(SessionCommand::Close) | None => {
                         let _ = channel.eof().await;
                         break;

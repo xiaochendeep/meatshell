@@ -73,7 +73,8 @@ use crate::config::{AuthMethod, ConfigStore, Secret, Session, SessionKind};
 use crate::i18n::t;
 use crate::sftp::{spawn_sftp, SftpHandle};
 use crate::ssh::{
-    format_mtime, format_size, spawn_session, SessionCommand, SessionEvent, SessionHandle,
+    format_mtime, format_size, spawn_session, RdpPointerEvent, SessionCommand, SessionEvent,
+    SessionHandle,
 };
 use crate::system::{format_bytes_per_sec, format_mem_mib, SystemSampler, SystemSnapshot};
 
@@ -1195,6 +1196,7 @@ fn wire_session_callbacks(
             });
             terminals_model.push(TerminalState {
                 id: tab_id.clone().into(),
+                is_rdp: session.kind == SessionKind::Rdp,
                 status: t("连接中...", "Connecting...").into(),
                 spans: ModelRc::from(std::rc::Rc::new(VecModel::<TermSpan>::default())),
                 cursor_row: 0,
@@ -1203,6 +1205,9 @@ fn wire_session_callbacks(
                 is_alt_screen: false,
                 find_matches: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
                 selection: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
+                rdp_frame: slint::Image::default(),
+                rdp_width: 0,
+                rdp_height: 0,
                 sftp_path: "/".into(),
                 sftp_entries: ModelRc::from(
                     std::rc::Rc::new(VecModel::<SftpEntry>::default()),
@@ -1396,6 +1401,14 @@ fn wire_session_callbacks(
             }
         });
     }
+}
+
+fn slint_image_from_rgba(width: u32, height: u32, rgba: &[u8]) -> Option<slint::Image> {
+    if width == 0 || height == 0 || rgba.len() != width as usize * height as usize * 4 {
+        return None;
+    }
+    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba, width, height);
+    Some(slint::Image::from_rgba8(buffer))
 }
 
 type NetHist = Arc<Mutex<Vec<f32>>>;
@@ -1727,6 +1740,19 @@ fn apply_session_event_to_window(
             }
             if win.get_active_tab_id().as_str() == tab_id {
                 refresh_sidebar(win, statuses, local, local_net_hist);
+            }
+        }
+        SessionEvent::RdpFrame {
+            width,
+            height,
+            rgba,
+        } => {
+            if let Some(image) = slint_image_from_rgba(width, height, &rgba) {
+                update_terminal(&|t| {
+                    t.rdp_frame = image.clone();
+                    t.rdp_width = width as i32;
+                    t.rdp_height = height as i32;
+                });
             }
         }
         SessionEvent::ResourceStats {
@@ -2357,6 +2383,56 @@ fn wire_key_input(
                 }
             }
         });
+    }
+
+    {
+        let handles = handles.clone();
+        window.on_rdp_key(
+            move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
+                if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
+                    handle.send_rdp_key(key.to_string(), ctrl, alt, shift);
+                }
+            },
+        );
+    }
+
+    {
+        let handles = handles.clone();
+        window.on_rdp_pointer(
+            move |tab_id: SharedString,
+                  kind: SharedString,
+                  x: f32,
+                  y: f32,
+                  button: i32,
+                  delta: f32| {
+                let x = (x.round() as i32).clamp(0, u16::MAX as i32) as u16;
+                let y = (y.round() as i32).clamp(0, u16::MAX as i32) as u16;
+                let event = match kind.as_str() {
+                    "move" => Some(RdpPointerEvent::Move { x, y }),
+                    "down" => Some(RdpPointerEvent::Down {
+                        x,
+                        y,
+                        button: button.clamp(0, u8::MAX as i32) as u8,
+                    }),
+                    "up" => Some(RdpPointerEvent::Up {
+                        x,
+                        y,
+                        button: button.clamp(0, u8::MAX as i32) as u8,
+                    }),
+                    "wheel" => Some(RdpPointerEvent::Wheel {
+                        x,
+                        y,
+                        delta: delta.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+                    }),
+                    _ => None,
+                };
+                if let Some(event) = event {
+                    if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
+                        handle.send_rdp_pointer(event);
+                    }
+                }
+            },
+        );
     }
 
     // Propagate PTY resize to the SSH worker and vt100 parser. Pixel

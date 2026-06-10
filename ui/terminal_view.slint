@@ -71,6 +71,7 @@ component MenuItem inherits Rectangle {
 
 export component TerminalView inherits Rectangle {
     in property <string> tab-id;
+    in property <bool> is-rdp: false;
     in property <string> status-line: @tr("Not connected");
     in property <[TermSpan]> spans;     // coloured runs of the visible screen
     in property <int> cursor-row;       // cursor cell (grid coords)
@@ -79,6 +80,10 @@ export component TerminalView inherits Rectangle {
     in property <bool>   is-alt-screen;
     in property <[TermMatch]> find-matches; // search-highlight rectangles
     in property <[TermMatch]> selection;    // drag-selection highlight rectangles
+
+    in property <image> rdp-frame;
+    in property <int> rdp-width: 0;
+    in property <int> rdp-height: 0;
 
     in property <string>  sftp-path: "/";
     in property <[SftpEntry]> sftp-entries;
@@ -91,6 +96,8 @@ export component TerminalView inherits Rectangle {
     property <bool>   sftp-collapsed: false;       // SFTP panel minimised (toolbar only)
 
     callback send-key(string, bool, bool, bool);
+    callback rdp-key(string, bool, bool, bool);
+    callback rdp-pointer(string, float, float, int, float);
     callback terminal-resize(float, float);
     callback sftp-navigate(string);
     callback sftp-download(string);
@@ -169,10 +176,10 @@ export component TerminalView inherits Rectangle {
     // columns reflows the vt100 screen and destroys the scrollback, so when you
     // switch back the output is gone.  Guarding on `visible` keeps each hidden
     // session frozen at its real size; `changed visible` re-syncs on return.
-    changed term-cols => { if (root.visible) { root.terminal-resize(root.term-cols, root.term-rows); } }
-    changed term-rows => { if (root.visible) { root.terminal-resize(root.term-cols, root.term-rows); } }
+    changed term-cols => { if (root.visible && !root.is-rdp) { root.terminal-resize(root.term-cols, root.term-rows); } }
+    changed term-rows => { if (root.visible && !root.is-rdp) { root.terminal-resize(root.term-cols, root.term-rows); } }
 
-    init => { root.terminal-resize(root.term-cols, root.term-rows); }
+    init => { if (!root.is-rdp) { root.terminal-resize(root.term-cols, root.term-rows); } }
 
     changed spans => {
         // Bash: keep the latest output pinned to the bottom.
@@ -180,28 +187,34 @@ export component TerminalView inherits Rectangle {
         // so the viewport must stay top-aligned (viewport-y = 0).  Scrolling to
         // the bottom would push the title bar + content off the top, leaving only
         // the program's status bar — exactly the "nano shows nothing" symptom.
-        if (!root.is-alt-screen) {
-            flickable.viewport-y = flickable.height - flickable.viewport-height;
-        } else {
-            flickable.viewport-y = 0;
+        if (!root.is-rdp) {
+            if (!root.is-alt-screen) {
+                flickable.viewport-y = flickable.height - flickable.viewport-height;
+            } else {
+                flickable.viewport-y = 0;
+            }
         }
     }
     changed is-alt-screen => {
         // Reset scroll on every mode switch (entering/leaving nano, vim, btop…).
         // Snapping to top on alt-screen entry ensures the full-screen program's
         // frame is shown from row 0, not from wherever history left off.
-        if (root.is-alt-screen) {
-            flickable.viewport-y = 0;
-        } else {
-            // Return to normal mode: pin to the most recent output.
-            flickable.viewport-y = flickable.height - flickable.viewport-height;
+        if (!root.is-rdp) {
+            if (root.is-alt-screen) {
+                flickable.viewport-y = 0;
+            } else {
+                // Return to normal mode: pin to the most recent output.
+                flickable.viewport-y = flickable.height - flickable.viewport-height;
+            }
         }
     }
     changed visible => {
         if (self.visible) {
             ime-input.focus();
             // Re-sync the PTY size on return (it was frozen while hidden).
-            root.terminal-resize(root.term-cols, root.term-rows);
+            if (!root.is-rdp) {
+                root.terminal-resize(root.term-cols, root.term-rows);
+            }
         }
     }
 
@@ -231,7 +244,6 @@ export component TerminalView inherits Rectangle {
                     color: Theme.success;
                     font-size: Theme.fs-xs;
                     vertical-alignment: center;
-                    padding-right: 4px;
                 }
             }
         }
@@ -268,7 +280,85 @@ export component TerminalView inherits Rectangle {
             VerticalLayout {
                 spacing: 0;
 
+                if root.is-rdp : Rectangle {
+                    vertical-stretch: 1;
+                    background: #000000;
+                    clip: true;
+
+                    property <float> scale-factor: min(
+                        (self.width / 1px) / max(1, root.rdp-width),
+                        (self.height / 1px) / max(1, root.rdp-height)
+                    );
+                    property <length> image-w: root.rdp-width * scale-factor * 1px;
+                    property <length> image-h: root.rdp-height * scale-factor * 1px;
+                    property <length> image-x: (self.width - image-w) / 2;
+                    property <length> image-y: (self.height - image-h) / 2;
+
+                    Image {
+                        x: parent.image-x;
+                        y: parent.image-y;
+                        width: parent.image-w;
+                        height: parent.image-h;
+                        source: root.rdp-frame;
+                        image-fit: fill;
+                    }
+
+                    if root.rdp-width <= 0 || root.rdp-height <= 0 : Text {
+                        text: @tr("RDP connecting...");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-md;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    rdp-touch := TouchArea {
+                        mouse-cursor: default;
+                        pointer-event(ev) => {
+                            ime-input.focus();
+                            if (root.rdp-width > 0 && root.rdp-height > 0) {
+                                if (ev.kind == PointerEventKind.down) {
+                                    root.rdp-pointer("down",
+                                        clamp((self.mouse-x - parent.image-x) / max(1px, parent.image-w) * root.rdp-width, 0, max(0, root.rdp-width - 1)),
+                                        clamp((self.mouse-y - parent.image-y) / max(1px, parent.image-h) * root.rdp-height, 0, max(0, root.rdp-height - 1)),
+                                        ev.button == PointerEventButton.left ? 1
+                                        : ev.button == PointerEventButton.middle ? 2
+                                        : ev.button == PointerEventButton.right ? 3 : 0,
+                                        0);
+                                } else if (ev.kind == PointerEventKind.up) {
+                                    root.rdp-pointer("up",
+                                        clamp((self.mouse-x - parent.image-x) / max(1px, parent.image-w) * root.rdp-width, 0, max(0, root.rdp-width - 1)),
+                                        clamp((self.mouse-y - parent.image-y) / max(1px, parent.image-h) * root.rdp-height, 0, max(0, root.rdp-height - 1)),
+                                        ev.button == PointerEventButton.left ? 1
+                                        : ev.button == PointerEventButton.middle ? 2
+                                        : ev.button == PointerEventButton.right ? 3 : 0,
+                                        0);
+                                }
+                            }
+                        }
+                        moved => {
+                            if (root.rdp-width > 0 && root.rdp-height > 0) {
+                                root.rdp-pointer("move",
+                                    clamp((self.mouse-x - parent.image-x) / max(1px, parent.image-w) * root.rdp-width, 0, max(0, root.rdp-width - 1)),
+                                    clamp((self.mouse-y - parent.image-y) / max(1px, parent.image-h) * root.rdp-height, 0, max(0, root.rdp-height - 1)),
+                                    0,
+                                    0);
+                            }
+                        }
+                        scroll-event(ev) => {
+                            if (root.rdp-width > 0 && root.rdp-height > 0) {
+                                root.rdp-pointer("wheel",
+                                    clamp((self.mouse-x - parent.image-x) / max(1px, parent.image-w) * root.rdp-width, 0, max(0, root.rdp-width - 1)),
+                                    clamp((self.mouse-y - parent.image-y) / max(1px, parent.image-h) * root.rdp-height, 0, max(0, root.rdp-height - 1)),
+                                    0,
+                                    ev.delta-y / 1px);
+                            }
+                            accept
+                        }
+                    }
+                }
+
                 flickable := Flickable {
+                    visible: !root.is-rdp;
                     vertical-stretch: 1;
                     viewport-width: self.width;
                     // Alt-screen: lock the viewport to exactly the visible height
@@ -458,7 +548,7 @@ export component TerminalView inherits Rectangle {
                 }
 
                 // Bottom focus-recovery / middle-click-paste strip
-                Rectangle {
+                if !root.is-rdp : Rectangle {
                     height: 16px;
                     background: Theme.term-bg;
                     TouchArea {
@@ -523,8 +613,13 @@ export component TerminalView inherits Rectangle {
                     // inserting the char into TextInput, so `edited` never fires
                     // for regular keystrokes — the character would be lost.
                     } else {
-                        root.send-key(event.text, event.modifiers.control,
-                                      event.modifiers.alt, event.modifiers.shift);
+                        if (root.is-rdp) {
+                            root.rdp-key(event.text, event.modifiers.control,
+                                         event.modifiers.alt, event.modifiers.shift);
+                        } else {
+                            root.send-key(event.text, event.modifiers.control,
+                                          event.modifiers.alt, event.modifiers.shift);
+                        }
                         accept
                     }
                 }
@@ -534,7 +629,11 @@ export component TerminalView inherits Rectangle {
                 // skip in-progress compositions.
                 edited => {
                     if (self.preedit-text == "" && self.text != "") {
-                        root.send-key(self.text, false, false, false);
+                        if (root.is-rdp) {
+                            root.rdp-key(self.text, false, false, false);
+                        } else {
+                            root.send-key(self.text, false, false, false);
+                        }
                         self.text = "";
                     }
                 }
@@ -614,7 +713,7 @@ export component TerminalView inherits Rectangle {
         }
 
         // --- Drag handle ----------------------------------------------------
-        Rectangle {
+        if !root.is-rdp : Rectangle {
             height: 4px;
             background: divider-ta.has-hover || root.sftp-dragging
                 ? Theme.accent
@@ -646,7 +745,7 @@ export component TerminalView inherits Rectangle {
         }
 
         // --- SFTP panel -----------------------------------------------------
-        SftpPanel {
+        if !root.is-rdp : SftpPanel {
             height: root.sftp-panel-height;
             collapsed:     root.sftp-collapsed;
             current-path:  root.sftp-path;

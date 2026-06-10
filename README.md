@@ -69,7 +69,7 @@ xattr -dr com.apple.quarantine meatshell     # 去掉「未签名应用」的 Ga
 - [ ] 完整 VT/ANSI 终端模拟（接入 [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal)）
 - [ ] 远端主机资源监控（与 FinalShell 一样执行远端脚本收集）
 - [x] SFTP 文件浏览 + 拖拽上传/下载
-- [ ] 已知主机 (known_hosts) 校验
+- [x] 已知主机 (known_hosts) 校验（首次连接记录，后续变更拒绝）
 - [ ] 会话密码使用 OS 钥匙串存储
 
 ### v0.3+
@@ -128,8 +128,10 @@ meatshell/
   反馈方式。
 - 应用事件循环是单线程（Slint 要求），所有跨线程 UI 更新通过
   `slint::invoke_from_event_loop` 回调。
-- 目前 `check_server_key` 接受任意服务端密钥（类似 `StrictHostKeyChecking=no`），
-  生产使用前请接入 known_hosts 校验。
+- SSH/SFTP 使用应用配置目录里的 `known_hosts` 做 TOFU 校验：首次连接记录
+  host key，后续 key 变化会拒绝连接。
+- RSA 支持已关闭，以避开 `rsa` crate 的 RUSTSEC-2023-0071；请使用
+  Ed25519/ECDSA host key 和用户私钥。
 
 ## License
 

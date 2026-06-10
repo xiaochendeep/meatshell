@@ -22,16 +22,17 @@ chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.33"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
-russh = "0.49"
-russh-keys = "0.49"
-ssh-key = "0.6"
+# RSA support is disabled because the RustCrypto rsa crate is under
+# RUSTSEC-2023-0071 with no fixed release. Ed25519/ECDSA host and user keys
+# remain supported.
+russh = { version = "0.61", default-features = false, features = ["aws-lc-rs", "flate2"] }
+ssh-key = "=0.7.0-rc.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
-async-trait = "0.1"
 futures = "0.3"
 vt100 = "0.15"
-russh-sftp = "2"
+russh-sftp = "2.3"
 rfd = "0.15"
 arboard = "3"
 # Zeroes password buffers on drop so plaintext credentials don't linger in

@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
 use russh::client::{self, Handler};
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
@@ -29,6 +28,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::config::{AuthMethod, Session};
+use crate::host_keys::{HostKeyStatus, HostKeyVerifier};
 use crate::i18n::t;
 use crate::ssh::{format_mtime, format_size, RemoteEntry, RemoteTreeNode, SessionEvent};
 
@@ -179,17 +179,20 @@ async fn run_sftp(
     });
 
     let addr = format!("{}:{}", session.host, session.port);
+    let handler = SftpClientHandler {
+        host_key: HostKeyVerifier::new(session.host.clone(), session.port),
+    };
     // Tunnel through the same proxy as the shell session, if configured.
     let mut handle = match crate::proxy::resolve(&session.proxy) {
         Some(p) => {
             let stream = crate::proxy::connect(&p, &session.host, session.port)
                 .await
                 .with_context(|| format!("sftp proxy connect {} failed", addr))?;
-            client::connect_stream(config, stream, SftpClientHandler)
+            client::connect_stream(config, stream, handler)
                 .await
                 .with_context(|| format!("sftp connect {} failed", addr))?
         }
-        None => client::connect(config, addr.as_str(), SftpClientHandler)
+        None => client::connect(config, addr.as_str(), handler)
             .await
             .with_context(|| format!("sftp connect {} failed", addr))?,
     };
@@ -217,8 +220,7 @@ async fn run_sftp(
             } else {
                 None
             };
-            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
-                .context("invalid private key")?;
+            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash);
             handle
                 .authenticate_publickey(&session.user, key_with_hash)
                 .await
@@ -226,7 +228,7 @@ async fn run_sftp(
         }
     };
 
-    if !authed {
+    if !authed.success() {
         return Err(anyhow!(t("SFTP 认证失败", "SFTP authentication failed")));
     }
 
@@ -584,7 +586,12 @@ fn open_with_os(path: &str) {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn open_with_os(path: &str) {
+    let _ = std::process::Command::new("open").arg(path).spawn();
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
 fn open_with_os(path: &str) {
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
@@ -1010,29 +1017,43 @@ async fn upload_pipelined(
 }
 
 // ---------------------------------------------------------------------------
-// russh client handler (accept any server key, same as the shell handler)
+// russh client handler (same host-key verification as the shell handler)
 // ---------------------------------------------------------------------------
 
-struct SftpClientHandler;
+struct SftpClientHandler {
+    host_key: HostKeyVerifier,
+}
 
-#[async_trait]
 impl Handler for SftpClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
+        server_public_key: &PublicKey,
+    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send {
+        let check = self.host_key.check(server_public_key);
+        async move {
+            match check {
+                Ok(HostKeyStatus::Trusted) => {}
+                Ok(HostKeyStatus::Learned) => {
+                    tracing::info!("learned new SFTP host key");
+                }
+                Err(err) => {
+                    tracing::error!("SFTP host key verification failed: {err}");
+                    return Err(err.into_russh_error());
+                }
+            }
+            Ok(true)
+        }
     }
 
-    async fn data(
+    fn data(
         &mut self,
         _channel: russh::ChannelId,
         _data: &[u8],
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        async { Ok(()) }
     }
 }
 

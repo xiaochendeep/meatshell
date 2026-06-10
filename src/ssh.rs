@@ -8,7 +8,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
 use russh::client::{self, Handle, Handler};
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
@@ -18,6 +17,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
 use crate::config::{AuthMethod, Session};
+use crate::host_keys::{HostKeyStatus, HostKeyVerifier};
 use crate::i18n::t;
 
 // ---------------------------------------------------------------------------
@@ -291,7 +291,9 @@ async fn run_session(
         ..<_>::default()
     });
 
-    let handler = ClientHandler {};
+    let handler = ClientHandler {
+        host_key: HostKeyVerifier::new(session.host.clone(), session.port),
+    };
     let addr = format!("{}:{}", session.host, session.port);
     // Connect directly, or tunnel through a SOCKS5 / HTTP proxy (issue #7).
     let mut handle = match crate::proxy::resolve(&session.proxy) {
@@ -340,8 +342,7 @@ async fn run_session(
             } else {
                 None
             };
-            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
-                .context("invalid private key / hash algorithm combination")?;
+            let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash);
             handle
                 .authenticate_publickey(&session.user, key_with_hash)
                 .await
@@ -349,7 +350,7 @@ async fn run_session(
         }
     };
 
-    if !authed {
+    if !authed.success() {
         let _ = events.send(SessionEvent::Closed(t("认证失败", "authentication failed").into()));
         let _ = handle
             .disconnect(Disconnect::ByApplication, "auth failed", "")
@@ -732,29 +733,41 @@ fn parse_net_dev_line(line: &str) -> Option<(String, (u64, u64))> {
     Some((iface.to_string(), (nums[0], nums[8])))
 }
 
-/// Dead-simple client handler.  For v0.1 we accept any server key (similar to
-/// `ssh -o StrictHostKeyChecking=no`). A real host-key verification flow
-/// with on-disk known_hosts is on the roadmap.
-struct ClientHandler;
+/// Client handler that verifies SSH host keys with trust-on-first-use storage.
+struct ClientHandler {
+    host_key: HostKeyVerifier,
+}
 
-#[async_trait]
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
+        server_public_key: &PublicKey,
+    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send {
+        let check = self.host_key.check(server_public_key);
+        async move {
+            match check {
+                Ok(HostKeyStatus::Trusted) => {}
+                Ok(HostKeyStatus::Learned) => {
+                    tracing::info!("learned new SSH host key");
+                }
+                Err(err) => {
+                    tracing::error!("SSH host key verification failed: {err}");
+                    return Err(err.into_russh_error());
+                }
+            }
+            Ok(true)
+        }
     }
 
-    async fn data(
+    fn data(
         &mut self,
         _channel: ChannelId,
         _data: &[u8],
         _session: &mut client::Session,
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        async { Ok(()) }
     }
 }
 

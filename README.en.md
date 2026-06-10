@@ -73,7 +73,7 @@ xattr -dr com.apple.quarantine meatshell     # clear the "unsigned app" Gatekeep
 - [ ] Full VT/ANSI terminal emulation (integrate [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal))
 - [ ] Remote host resource monitoring (run a remote collector script, like FinalShell)
 - [x] SFTP file browser + drag-and-drop upload/download
-- [ ] Known-hosts (`known_hosts`) verification
+- [x] Known-hosts (`known_hosts`) verification (learn first use, reject later changes)
 - [ ] Store session passwords in the OS keychain
 
 ### v0.3+
@@ -133,9 +133,10 @@ meatshell/
   `cargo check` is the fastest feedback loop.
 - The application event loop is single-threaded (required by Slint); all
   cross-thread UI updates go through `slint::invoke_from_event_loop` callbacks.
-- `check_server_key` currently accepts any server key (like
-  `StrictHostKeyChecking=no`); wire up known-hosts verification before
-  production use.
+- SSH/SFTP use TOFU verification in the app config directory's `known_hosts`:
+  the first connection records the host key, and later key changes are rejected.
+- RSA support is disabled to avoid the `rsa` crate's RUSTSEC-2023-0071; use
+  Ed25519/ECDSA host keys and user private keys.
 
 ## License
 

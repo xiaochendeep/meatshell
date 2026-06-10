@@ -163,7 +163,7 @@ pub struct Session {
     #[serde(default)]
     pub private_key_path: String,
     /// Optional outbound proxy, e.g. "socks5://127.0.0.1:1080" or
-    /// "http://user:pass@host:8080". Empty = use $ALL_PROXY, else direct.
+    /// "http://user:pass@host:8080". Empty = direct connection.
     #[serde(default)]
     pub proxy: String,
     #[serde(default)]
@@ -243,13 +243,8 @@ pub struct ConfigFile {
     pub font_size: u32,
 }
 
-/// Portable export file (issue #46): sessions with everything in plaintext
-/// **except** the password, which is encrypted with a fixed key baked into the
-/// binary so the file opens on *any* machine running meatshell.
-///
-/// Security note: a built-in key in open-source code is **obfuscation, not real
-/// security** — anyone with the source can derive it. It only stops a casual
-/// over-the-shoulder read of the file, same level as FinalShell's export.
+/// Portable export file. New exports intentionally omit passwords; old exports
+/// that used the legacy portable obfuscation key are still accepted on import.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ExportFile {
     /// Format marker / version so the schema can evolve later.
@@ -269,11 +264,11 @@ impl ConfigStore {
     /// The prefix that marks an encrypted password blob in sessions.json.
     const ENC_PREFIX: &'static str = "enc:v1:";
 
-    /// Marks a password encrypted with the **portable export key** (issue #46).
+    /// Marks a password encrypted with the legacy portable export key.
     const EXPORT_PREFIX: &'static str = "enc:exp:v1:";
 
-    /// Fixed 32-byte key for portable exports. Baked into the binary so an
-    /// exported file decrypts on any machine. Obfuscation only — see `ExportFile`.
+    /// Fixed legacy key for older portable exports. Kept only so existing files
+    /// can be imported; new exports never write password material.
     const EXPORT_KEY: [u8; 32] = *b"meatshell.export.portable.key.01";
 
     // ── Encryption helpers ────────────────────────────────────────────────
@@ -396,9 +391,13 @@ impl ConfigStore {
     }
 
     fn config_path() -> Result<PathBuf> {
+        Ok(Self::config_dir()?.join("sessions.json"))
+    }
+
+    pub fn config_dir() -> Result<PathBuf> {
         let dirs = ProjectDirs::from("dev", "meatshell", "meatshell")
             .context("could not determine user config directory")?;
-        Ok(dirs.config_dir().join("sessions.json"))
+        Ok(dirs.config_dir().to_path_buf())
     }
 
     pub fn sessions(&self) -> &[Session] {
@@ -520,7 +519,8 @@ impl ConfigStore {
 
     // ── Portable export / import (issue #46) ──────────────────────────────
 
-    /// Encrypt a password with the portable export key → `"enc:exp:v1:<b64>"`.
+    /// Encrypt a password with the legacy portable export key.
+    #[cfg(test)]
     fn encrypt_export(plaintext: &str) -> Result<String> {
         let cipher = ChaCha20Poly1305::new((&Self::EXPORT_KEY).into());
         let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
@@ -546,20 +546,17 @@ impl ConfigStore {
         String::from_utf8(plain).ok()
     }
 
-    /// Export all sessions to a portable JSON file. Passwords are re-encrypted
-    /// with the built-in export key; everything else stays plaintext so the
-    /// file is human-readable and editable. Returns the number of sessions.
+    /// Export all sessions to a portable JSON file. Passwords are stripped
+    /// instead of obfuscated with a built-in key; everything else stays
+    /// plaintext so the file is human-readable and editable. Returns the
+    /// number of sessions.
     pub fn export_to(&self, path: &Path) -> Result<usize> {
         let mut out = ExportFile {
             meatshell_export: 1,
             sessions: self.cache.sessions.clone(),
         };
         for s in &mut out.sessions {
-            // `cache` holds plaintext passwords; obfuscate with the export key.
-            if !s.password.is_empty() {
-                let enc = Self::encrypt_export(s.password.as_str())?;
-                s.password = Secret::new(enc);
-            }
+            s.password = Secret::default();
             // `last_used` is machine-local noise — don't carry it across.
             s.last_used = None;
         }
@@ -580,8 +577,8 @@ impl ConfigStore {
         let mut added = 0usize;
         let mut skipped = 0usize;
         for mut s in file.sessions {
-            // Recover the plaintext password (cache stores plaintext). Accept an
-            // export blob, our local enc:v1 blob, or a legacy plaintext value.
+            // Recover old export blobs and local encrypted blobs for backwards
+            // compatibility. New exports intentionally carry an empty password.
             if let Some(plain) = Self::decrypt_export(s.password.as_str()) {
                 s.password = Secret::new(plain);
             } else if let Some(plain) = Self::try_decrypt(&self.key, s.password.as_str()) {
@@ -619,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn export_import_roundtrip_preserves_password() {
+    fn export_import_roundtrip_strips_password() {
         let mut a = temp_store();
         a.cache.sessions.push(Session {
             name: "pve".into(),
@@ -634,17 +631,17 @@ mod tests {
             std::env::temp_dir().join(format!("ms-exp-{}.json", Uuid::new_v4()));
         assert_eq!(a.export_to(&export_path).unwrap(), 1);
 
-        // The file keeps host/user plaintext but the password is obfuscated.
+        // The file keeps host/user plaintext but does not contain password data.
         let raw = std::fs::read_to_string(&export_path).unwrap();
         assert!(raw.contains("192.168.100.2"));
-        assert!(raw.contains(ConfigStore::EXPORT_PREFIX));
+        assert!(!raw.contains(ConfigStore::EXPORT_PREFIX));
         assert!(!raw.contains("s3cr3t"));
 
-        // Importing into a fresh store recovers the plaintext password.
+        // Importing into a fresh store creates the session without a password.
         let mut b = temp_store();
         assert_eq!(b.import_from(&export_path).unwrap(), (1, 0));
         assert_eq!(b.cache.sessions.len(), 1);
-        assert_eq!(b.cache.sessions[0].password.as_str(), "s3cr3t");
+        assert_eq!(b.cache.sessions[0].password.as_str(), "");
         assert_eq!(b.cache.sessions[0].host, "192.168.100.2");
 
         // Re-importing the same file skips the duplicate.
@@ -652,6 +649,32 @@ mod tests {
 
         let _ = std::fs::remove_file(&export_path);
         let _ = std::fs::remove_file(&a.path);
+        let _ = std::fs::remove_file(&b.path);
+    }
+
+    #[test]
+    fn legacy_export_passwords_still_import() {
+        let mut file = ExportFile {
+            meatshell_export: 1,
+            sessions: vec![Session {
+                name: "legacy".into(),
+                host: "10.0.0.2".into(),
+                port: 22,
+                user: "root".into(),
+                password: Secret::new(ConfigStore::encrypt_export("old-secret").unwrap()),
+                ..Session::new_empty()
+            }],
+        };
+        file.sessions[0].last_used = None;
+        let export_path =
+            std::env::temp_dir().join(format!("ms-legacy-exp-{}.json", Uuid::new_v4()));
+        std::fs::write(&export_path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
+
+        let mut b = temp_store();
+        assert_eq!(b.import_from(&export_path).unwrap(), (1, 0));
+        assert_eq!(b.cache.sessions[0].password.as_str(), "old-secret");
+
+        let _ = std::fs::remove_file(&export_path);
         let _ = std::fs::remove_file(&b.path);
     }
 }

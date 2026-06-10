@@ -9,8 +9,9 @@
 //! * **HTTP / HTTPS CONNECT** (`http://` / `https://`): we issue an HTTP
 //!   `CONNECT host:port` and reuse the same socket as the tunnel.
 //!
-//! The proxy is taken from the per-session setting, falling back to the standard
-//! `ALL_PROXY` / `all_proxy` environment variable.
+//! The proxy is taken only from the per-session setting. Empty means a direct
+//! connection; environment proxy variables are deliberately ignored for SSH-like
+//! transports so a shell environment cannot silently reroute credentials.
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
@@ -48,20 +49,11 @@ impl std::fmt::Debug for ProxyConfig {
     }
 }
 
-/// Resolve the proxy for a session: the explicit `session_proxy` string if set,
-/// otherwise the `ALL_PROXY` / `all_proxy` environment variable.  Returns `None`
-/// for a direct connection.
+/// Resolve the proxy for a session. Returns `None` for a direct connection.
 pub fn resolve(session_proxy: &str) -> Option<ProxyConfig> {
     let s = session_proxy.trim();
     if !s.is_empty() {
         return parse(s);
-    }
-    for var in ["ALL_PROXY", "all_proxy"] {
-        if let Ok(v) = std::env::var(var) {
-            if !v.trim().is_empty() {
-                return parse(v.trim());
-            }
-        }
     }
     None
 }

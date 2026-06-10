@@ -419,7 +419,11 @@ pub fn run() -> Result<()> {
             {
                 let _ = std::process::Command::new("explorer").arg(&dir).spawn();
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
+            {
+                let _ = std::process::Command::new("open").arg(&dir).spawn();
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
             {
                 let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
             }
@@ -452,7 +456,7 @@ pub fn run() -> Result<()> {
             t("uuid — 唯一标识符", "uuid — unique identifiers"),
             t("anyhow / thiserror — 错误处理", "anyhow / thiserror — error handling"),
             t("tracing / tracing-subscriber — 日志", "tracing / tracing-subscriber — logging"),
-            t("futures / async-trait — 异步辅助", "futures / async-trait — async helpers"),
+            t("futures — 异步辅助", "futures — async helpers"),
             t("rand — 随机数", "rand — randomness"),
             t("winresource — Windows 图标/资源嵌入", "winresource — Windows icon/resource embedding"),
         ]

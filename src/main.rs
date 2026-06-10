@@ -5,6 +5,7 @@
 
 mod app;
 mod config;
+mod host_keys;
 mod i18n;
 mod proxy;
 mod serial;

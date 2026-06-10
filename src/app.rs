@@ -1682,6 +1682,16 @@ fn apply_session_event_to_window(
             }
         }
     };
+    let is_rdp_terminal = || {
+        for i in 0..terminals.row_count() {
+            if let Some(row) = terminals.row_data(i) {
+                if row.id.as_str() == tab_id {
+                    return row.is_rdp;
+                }
+            }
+        }
+        false
+    };
 
     match event {
         SessionEvent::Status(status) => {
@@ -1731,6 +1741,10 @@ fn apply_session_event_to_window(
         SessionEvent::Connected => {
             update_tab(&|t| t.connected = true);
             update_terminal(&|t| t.status = crate::i18n::t("已连接", "Connected").into());
+            if is_rdp_terminal() {
+                win.set_rdp_popout_tab_id(tab_id.into());
+                win.set_rdp_popout_open(true);
+            }
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.state = 1;
             }
@@ -1741,6 +1755,9 @@ fn apply_session_event_to_window(
         SessionEvent::Closed(reason) => {
             update_tab(&|t| t.connected = false);
             update_terminal(&|t| t.status = format!("{} — {reason}", crate::i18n::t("已断开", "Disconnected")).into());
+            if win.get_rdp_popout_tab_id().as_str() == tab_id {
+                win.set_rdp_popout_open(false);
+            }
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.state = 2;
             }
@@ -1974,6 +1991,9 @@ fn wire_tab_callbacks(
 
             // If we closed the active tab, fall back to the welcome page.
             if let Some(w) = weak.upgrade() {
+                if w.get_rdp_popout_tab_id().as_str() == id {
+                    w.set_rdp_popout_open(false);
+                }
                 if w.get_active_tab_id().as_str() == id {
                     w.set_active_tab_id("welcome".into());
                 }

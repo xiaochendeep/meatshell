@@ -60,6 +60,189 @@ export struct TerminalState {
     sftp-tree-nodes: [SftpTreeNode],
 }
 
+component RdpPopout inherits Rectangle {
+    in property <string> tab-id;
+    in property <bool> lang-en: false;
+    in property <string> status-line: "";
+    in property <image> rdp-frame;
+    in property <int> rdp-width: 0;
+    in property <int> rdp-height: 0;
+
+    callback close();
+    callback rdp-key(string, bool, bool, bool);
+    callback rdp-pointer(string, float, float, int, float);
+
+    background: #00000090;
+    changed visible => { if (self.visible) { rdp-ime.focus(); } }
+
+    TouchArea { clicked => { root.close(); } }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(parent.width - 40px, 1280px);
+        height: min(parent.height - 40px, 820px);
+        background: #050505;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        border-radius: Theme.radius-md;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000c0;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            spacing: 0;
+
+            Rectangle {
+                height: 36px;
+                background: Theme.bg-panel-alt;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 8px;
+
+                    Text {
+                        text: root.lang-en ? "Windows RDP" : "Windows RDP";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-md;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.status-line;
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-xs;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: close-ta.has-hover ? Theme.bg-hover : transparent;
+                        close-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.close(); }
+                        }
+                        Text {
+                            text: "\u{E5CD}";
+                            font-family: "Material Icons";
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            frame-shell := Rectangle {
+                vertical-stretch: 1;
+                background: #000000;
+                clip: true;
+
+                property <float> scale-factor: min(
+                    (self.width / 1px) / max(1, root.rdp-width),
+                    (self.height / 1px) / max(1, root.rdp-height)
+                );
+                property <length> image-w: root.rdp-width * scale-factor * 1px;
+                property <length> image-h: root.rdp-height * scale-factor * 1px;
+                property <length> image-x: (self.width - image-w) / 2;
+                property <length> image-y: (self.height - image-h) / 2;
+
+                Image {
+                    x: parent.image-x;
+                    y: parent.image-y;
+                    width: parent.image-w;
+                    height: parent.image-h;
+                    source: root.rdp-frame;
+                    image-fit: fill;
+                }
+
+                if root.rdp-width <= 0 || root.rdp-height <= 0 : Text {
+                    text: @tr("RDP connecting...");
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-md;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                rdp-touch := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-cursor: default;
+                    pointer-event(ev) => {
+                        rdp-ime.focus();
+                        if (root.rdp-width > 0 && root.rdp-height > 0) {
+                            if (ev.kind == PointerEventKind.down) {
+                                root.rdp-pointer("down",
+                                    clamp((self.mouse-x - parent.image-x) / max(1px, parent.image-w) * root.rdp-width, 0, max(0, root.rdp-width - 1)),
+                                    clamp((self.mouse-y - parent.image-y) / max(1px, parent.image-h) * root.rdp-height, 0, max(0, root.rdp-height - 1)),
+                                    ev.button == PointerEventButton.left ? 1
+                                    : ev.button == PointerEventButton.middle ? 2
+                                    : ev.button == PointerEventButton.right ? 3 : 0,
+                                    0);
+                            } else if (ev.kind == PointerEventKind.up) {
+                                root.rdp-pointer("up",
+                                    clamp((self.mouse-x - parent.image-x) / max(1px, parent.image-w) * root.rdp-width, 0, max(0, root.rdp-width - 1)),
+                                    clamp((self.mouse-y - parent.image-y) / max(1px, parent.image-h) * root.rdp-height, 0, max(0, root.rdp-height - 1)),
+                                    ev.button == PointerEventButton.left ? 1
+                                    : ev.button == PointerEventButton.middle ? 2
+                                    : ev.button == PointerEventButton.right ? 3 : 0,
+                                    0);
+                            }
+                        }
+                    }
+                    moved => {
+                        if (root.rdp-width > 0 && root.rdp-height > 0) {
+                            root.rdp-pointer("move",
+                                clamp((self.mouse-x - parent.image-x) / max(1px, parent.image-w) * root.rdp-width, 0, max(0, root.rdp-width - 1)),
+                                clamp((self.mouse-y - parent.image-y) / max(1px, parent.image-h) * root.rdp-height, 0, max(0, root.rdp-height - 1)),
+                                0,
+                                0);
+                        }
+                    }
+                    scroll-event(ev) => {
+                        if (root.rdp-width > 0 && root.rdp-height > 0) {
+                            root.rdp-pointer("wheel",
+                                clamp((self.mouse-x - parent.image-x) / max(1px, parent.image-w) * root.rdp-width, 0, max(0, root.rdp-width - 1)),
+                                clamp((self.mouse-y - parent.image-y) / max(1px, parent.image-h) * root.rdp-height, 0, max(0, root.rdp-height - 1)),
+                                0,
+                                ev.delta-y / 1px);
+                        }
+                        accept
+                    }
+                }
+
+                rdp-ime := TextInput {
+                    x: 0;
+                    y: 0;
+                    width: 1px;
+                    height: 1px;
+                    opacity: 0;
+                    single-line: true;
+
+                    key-pressed(event) => {
+                        root.rdp-key(event.text, event.modifiers.control,
+                                     event.modifiers.alt, event.modifiers.shift);
+                        accept
+                    }
+
+                    edited => {
+                        if (self.preedit-text == "" && self.text != "") {
+                            root.rdp-key(self.text, false, false, false);
+                            self.text = "";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "meatshell";
     icon: @image-url("../assets/icon.png");
@@ -98,6 +281,8 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-open: false;  // settings menu popup
     in-out property <bool> sidebar-collapsed: false; // left panel hidden
     in-out property <bool> about-open: false;     // centered About dialog
+    in-out property <bool> rdp-popout-open: false; // centered RDP window
+    in-out property <string> rdp-popout-tab-id;
     in property <string> download-dir;      // preset SFTP download folder ("" = ask)
     in property <[TransferInfo]> transfers; // download/upload records (newest first)
     in property <[string]> about-libs;      // open-source libraries used
@@ -996,6 +1181,21 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+
+    for term in root.terminals : RdpPopout {
+        visible: root.rdp-popout-open && term.id == root.rdp-popout-tab-id && term.is-rdp;
+        width: parent.width;
+        height: parent.height;
+        tab-id: term.id;
+        lang-en: root.lang-en;
+        status-line: term.status;
+        rdp-frame: term.rdp-frame;
+        rdp-width: term.rdp-width;
+        rdp-height: term.rdp-height;
+        close => { root.rdp-popout-open = false; }
+        rdp-key(key, ctrl, alt, shift) => { root.rdp-key(term.id, key, ctrl, alt, shift); }
+        rdp-pointer(kind, x, y, button, delta) => { root.rdp-pointer(term.id, kind, x, y, button, delta); }
     }
 
     // --- Modal dialog -----------------------------------------------------

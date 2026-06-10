@@ -314,18 +314,49 @@ pub(crate) async fn authenticate_password_with_fallback<H: Handler>(
     user: &str,
     password: &str,
 ) -> Result<client::AuthResult> {
-    let authed = handle
+    let probed = handle
+        .authenticate_none(user)
+        .await
+        .context("auth method probe failed")?;
+
+    if probed.success() {
+        return Ok(probed);
+    }
+
+    let password_allowed = allows_password(&probed);
+    let keyboard_allowed = allows_keyboard_interactive(&probed);
+
+    if !password_allowed && keyboard_allowed {
+        return authenticate_keyboard_interactive_with_password(handle, user, password)
+            .await
+            .context("keyboard-interactive auth failed");
+    }
+
+    if !password_allowed {
+        return Ok(probed);
+    }
+
+    let password_auth = handle
         .authenticate_password(user, password)
         .await
         .context("password auth failed")?;
 
-    if authed.success() || !allows_keyboard_interactive(&authed) {
-        return Ok(authed);
+    if password_auth.success() || !allows_keyboard_interactive(&password_auth) {
+        return Ok(password_auth);
     }
 
     authenticate_keyboard_interactive_with_password(handle, user, password)
         .await
         .context("keyboard-interactive auth failed")
+}
+
+fn allows_password(auth: &client::AuthResult) -> bool {
+    match auth {
+        client::AuthResult::Failure { remaining_methods, .. } => {
+            remaining_methods.contains(&MethodKind::Password)
+        }
+        client::AuthResult::Success => false,
+    }
 }
 
 fn allows_keyboard_interactive(auth: &client::AuthResult) -> bool {

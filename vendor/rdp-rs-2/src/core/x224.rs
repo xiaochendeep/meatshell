@@ -23,7 +23,7 @@ pub enum NegotiationType {
 }
 
 #[repr(u32)]
-#[derive(Copy, Clone, Debug, TryFromPrimitive)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, TryFromPrimitive)]
 pub enum Protocols {
     /// Basic RDP security
     /// Not supported by rdp-rs
@@ -97,6 +97,12 @@ fn x224_connection_pdu(
     component![
         "header" => x224_crq(negotiation.length() as u8, MessageType::X224TPDUConnectionRequest),
         "negotiation" => negotiation
+    ]
+}
+
+fn x224_legacy_connection_pdu(code: MessageType) -> Component {
+    component![
+        "header" => x224_crq(0, code)
     ]
 }
 
@@ -215,6 +221,12 @@ impl<S: Read + Write> Client<S> {
         }
     }
 
+    pub fn connect_legacy(mut tpkt: tpkt::Client<S>) -> RdpResult<Client<S>> {
+        Self::write_legacy_connection_request(&mut tpkt)?;
+        Self::read_legacy_connection_confirm(&mut tpkt)?;
+        Ok(Client::new(tpkt, Protocols::ProtocolRDP))
+    }
+
     /// Send connection request
     fn write_connection_request(tpkt: &mut tpkt::Client<S>, security_protocols: u32, mode: Option<u8>) -> RdpResult<()> {
         tpkt.write(
@@ -224,6 +236,10 @@ impl<S: Read + Write> Client<S> {
                 Some(security_protocols)
             )
         )
+    }
+
+    fn write_legacy_connection_request(tpkt: &mut tpkt::Client<S>) -> RdpResult<()> {
+        tpkt.write(x224_legacy_connection_pdu(MessageType::X224TPDUConnectionRequest))
     }
 
     /// Expect a connection confirm payload
@@ -243,6 +259,20 @@ impl<S: Read + Write> Client<S> {
             NegotiationType::TypeRDPNegReq => Err(Error::RdpError(RdpError::new(RdpErrorKind::InvalidAutomata, "Server reject security protocols"))),
             NegotiationType::TypeRDPNegRsp => Ok(Protocols::try_from(cast!(DataType::U32, nego["result"])?)?)
         }
+    }
+
+    fn read_legacy_connection_confirm(tpkt: &mut tpkt::Client<S>) -> RdpResult<()> {
+        let mut buffer = try_let!(tpkt::Payload::Raw, tpkt.read()?)?;
+        let mut confirm = x224_legacy_connection_pdu(MessageType::X224TPDUConnectionConfirm);
+        confirm.read(&mut buffer)?;
+        let header = cast!(DataType::Component, confirm["header"]).unwrap();
+        if cast!(DataType::U8, header["code"])? != MessageType::X224TPDUConnectionConfirm as u8 {
+            return Err(Error::RdpError(RdpError::new(
+                RdpErrorKind::InvalidAutomata,
+                "Server did not confirm legacy X.224 connection",
+            )));
+        }
+        Ok(())
     }
 
     /// Getter for selected protocols

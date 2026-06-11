@@ -131,7 +131,7 @@ enum CapabilityFlag {
 /// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/6b58e11e-a32b-4903-b736-339f3cfe46ec?redirectedfrom=MSDN
 #[repr(u32)]
 #[allow(dead_code)]
-enum EncryptionMethod {
+pub enum EncryptionMethod {
     EncryptionFlag40bit = 0x00000001,
     EncryptionFlag128bit = 0x00000002,
     EncryptionFlag56bit = 0x00000008,
@@ -256,13 +256,9 @@ pub fn server_core_data() -> Component{
 
 /// Client security releated to deprecated RDP security layer
 /// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/6b58e11e-a32b-4903-b736-339f3cfe46ec?redirectedfrom=MSDN
-pub fn client_security_data() -> Component {
+pub fn client_security_data(encryption_methods: u32) -> Component {
     component![
-        "encryptionMethods" => U32::LE(
-            EncryptionMethod::EncryptionFlag40bit as u32 |
-            EncryptionMethod::EncryptionFlag56bit as u32 |
-            EncryptionMethod::EncryptionFlag128bit as u32
-         ),
+        "encryptionMethods" => U32::LE(encryption_methods),
         "extEncryptionMethods" => U32::LE(0)
     ]
 }

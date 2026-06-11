@@ -2,6 +2,7 @@ use core::x224;
 use core::tpkt;
 use model::error::{RdpResult, Error, RdpError, RdpErrorKind};
 use core::gcc::{KeyboardLayout, client_core_data, ClientData, ServerData, client_security_data, client_network_data, block_header, write_conference_create_request, MessageType, read_conference_create_response, Version};
+use core::gcc::EncryptionMethod;
 use model::data::{Trame, to_vec, Message, DataType, U16};
 use nla::asn1::{Sequence, ImplicitTag, OctetString, Enumerate, ASN1Type, Integer, to_der, from_ber};
 use yasna::{Tag};
@@ -189,7 +190,14 @@ impl<S: Read + Write> Client<S> {
             rdp_version: Version::RdpVersion5plus,
             name: client_name
         }));
-        let client_security_data = client_security_data();
+        let encryption_methods = if self.x224.get_selected_protocols() == x224::Protocols::ProtocolRDP {
+            0
+        } else {
+            EncryptionMethod::EncryptionFlag40bit as u32
+                | EncryptionMethod::EncryptionFlag56bit as u32
+                | EncryptionMethod::EncryptionFlag128bit as u32
+        };
+        let client_security_data = client_security_data(encryption_methods);
         let client_network_data = client_network_data(trame![]);
         let user_data = to_vec(&trame![
             trame![block_header(Some(MessageType::CsCore), Some(client_core_data.length() as u16)), client_core_data],

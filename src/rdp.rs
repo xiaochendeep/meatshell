@@ -86,6 +86,7 @@ async fn run_rdp(
     let std_stream = prepare_rdp_stream(std_stream)?;
 
     let blocking_events = events.clone();
+    let runtime_handle = tokio::runtime::Handle::current();
     let join = tokio::task::spawn_blocking(move || {
         run_rdp_blocking(
             session,
@@ -94,6 +95,7 @@ async fn run_rdp(
             std_stream,
             commands,
             blocking_events,
+            runtime_handle,
         )
     });
 
@@ -133,9 +135,27 @@ fn run_rdp_blocking(
     stream: StdTcpStream,
     mut commands: UnboundedReceiver<SessionCommand>,
     events: UnboundedSender<SessionEvent>,
+    runtime_handle: tokio::runtime::Handle,
 ) -> Result<()> {
-    let connected = connect_rdp_client(&session, stream)
-        .with_context(|| format!("RDP connect {host}:{port}"))?;
+    let connected = match connect_rdp_client(&session, stream, false) {
+        Ok(connected) => connected,
+        Err(err) if should_retry_legacy_rdp(&err) => {
+            let _ = events.send(SessionEvent::Status(format!(
+                "{} {}:{}",
+                t("RDP 服务端只接受旧安全层，正在重试", "RDP server requires legacy security; retrying"),
+                host,
+                port
+            )));
+            let retry_stream = runtime_handle
+                .block_on(connect_transport(&session, &host, port, &events))?
+                .into_std()
+                .context("convert legacy RDP stream")?;
+            let retry_stream = prepare_rdp_stream(retry_stream)?;
+            connect_rdp_client(&session, retry_stream, true)
+                .with_context(|| format!("RDP legacy connect {host}:{port}"))?
+        }
+        Err(err) => return Err(err).with_context(|| format!("RDP connect {host}:{port}")),
+    };
 
     #[cfg(unix)]
     let readiness_probe = connected.readiness_probe;
@@ -246,7 +266,11 @@ struct ConnectedRdp {
     readiness_probe: StdTcpStream,
 }
 
-fn connect_rdp_client(session: &Session, stream: StdTcpStream) -> Result<ConnectedRdp> {
+fn connect_rdp_client(
+    session: &Session,
+    stream: StdTcpStream,
+    legacy_security: bool,
+) -> Result<ConnectedRdp> {
     #[cfg(unix)]
     let readiness_probe = stream
         .try_clone()
@@ -259,7 +283,8 @@ fn connect_rdp_client(session: &Session, stream: StdTcpStream) -> Result<Connect
         .name("meatshell".to_string())
         .auto_logon(true)
         .check_certificate(false)
-        .use_nla(true);
+        .use_nla(!legacy_security)
+        .force_legacy_rdp(legacy_security);
 
     let client = connector.connect(stream).map_err(rdp_error)?;
     Ok(ConnectedRdp {
@@ -267,6 +292,12 @@ fn connect_rdp_client(session: &Session, stream: StdTcpStream) -> Result<Connect
         #[cfg(unix)]
         readiness_probe,
     })
+}
+
+fn should_retry_legacy_rdp(err: &anyhow::Error) -> bool {
+    let message = format!("{err:#}");
+    message.contains("MCS: Disconnect Provider Ultimatum")
+        || message.contains("legacy Standard RDP Security")
 }
 
 #[cfg(unix)]

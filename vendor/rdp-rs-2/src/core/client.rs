@@ -171,7 +171,9 @@ pub struct Connector {
     name: String,
     /// Use network level authentication
     /// default TRUE
-    use_nla: bool
+    use_nla: bool,
+    /// Force legacy Standard RDP Security without an X.224 negotiation request.
+    force_legacy_rdp: bool
 }
 
 impl Connector {
@@ -199,7 +201,8 @@ impl Connector {
             blank_creds: false,
             check_certificate: false,
             name: "rdp-rs".to_string(),
-            use_nla: true
+            use_nla: true,
+            force_legacy_rdp: false
         }
     }
 
@@ -237,14 +240,18 @@ impl Connector {
             protocols |= x224::Protocols::ProtocolHybrid as u32
         }
 
-        let x224 = x224::Client::connect(
-            tpkt::Client::new(tcp),
-            protocols,
-            self.check_certificate,
-            Some(&mut authentication),
-            self.restricted_admin_mode,
-            self.blank_creds
-        )?;
+        let x224 = if self.force_legacy_rdp {
+            x224::Client::connect_legacy(tpkt::Client::new(tcp))?
+        } else {
+            x224::Client::connect(
+                tpkt::Client::new(tcp),
+                protocols,
+                self.check_certificate,
+                Some(&mut authentication),
+                self.restricted_admin_mode,
+                self.blank_creds
+            )?
+        };
 
         // Create MCS layer and connect it
         let mut mcs = mcs::Client::new(x224);
@@ -346,6 +353,12 @@ impl Connector {
     /// Enable or disable Network Level Authentication
     pub fn use_nla(mut self, use_nla: bool) -> Self {
         self.use_nla = use_nla;
+        self
+    }
+
+    /// Force legacy Standard RDP Security without sending an RDP Negotiation Request.
+    pub fn force_legacy_rdp(mut self, force_legacy_rdp: bool) -> Self {
+        self.force_legacy_rdp = force_legacy_rdp;
         self
     }
 }

@@ -129,7 +129,6 @@ export component TerminalView inherits Rectangle {
     // Auto-scroll direction while drag-selecting past the visible edge.
     // 0 = none, -1 = above top (scroll to older), +1 = below bottom (newer).
     property <int> autoscroll-dir: 0;
-    property <length> vis-y: 0px;   // scratch: cursor Y within the visible viewport
 
     background: Theme.term-bg;
     forward-focus: ime-input;
@@ -186,38 +185,18 @@ export component TerminalView inherits Rectangle {
     init => { if (!root.is-rdp) { root.terminal-resize(root.term-cols, root.term-rows); } }
 
     changed spans => {
-        // Bash live view: keep the latest output pinned to the bottom.  When the
-        // user is browsing history, Rust renders the selected historical window
-        // into the grid, so Slint's inner Flickable should stay top-aligned.
-        // Alt-screen (nano/vim/htop/btop): the program owns a fixed full screen.
         if (!root.is-rdp) {
-            if (!root.is-alt-screen && root.scroll-offset == 0) {
-                flickable.viewport-y = flickable.height - flickable.viewport-height;
-            } else {
-                flickable.viewport-y = 0;
-            }
+            flickable.viewport-y = 0;
         }
     }
     changed scroll-offset => {
         if (!root.is-rdp) {
-            if (!root.is-alt-screen && root.scroll-offset == 0) {
-                flickable.viewport-y = flickable.height - flickable.viewport-height;
-            } else {
-                flickable.viewport-y = 0;
-            }
+            flickable.viewport-y = 0;
         }
     }
     changed is-alt-screen => {
-        // Reset scroll on every mode switch (entering/leaving nano, vim, btop…).
-        // Snapping to top on alt-screen entry ensures the full-screen program's
-        // frame is shown from row 0, not from wherever history left off.
         if (!root.is-rdp) {
-            if (root.is-alt-screen || root.scroll-offset > 0) {
-                flickable.viewport-y = 0;
-            } else {
-                // Return to normal mode: pin to the most recent output.
-                flickable.viewport-y = flickable.height - flickable.viewport-height;
-            }
+            flickable.viewport-y = 0;
         }
     }
     changed visible => {
@@ -377,13 +356,10 @@ export component TerminalView inherits Rectangle {
                     // not by letting Flickable pan its own viewport.
                     interactive: false;
                     viewport-width: self.width;
-                    // Alt-screen: lock the viewport to exactly the visible height
-                    // so the full-screen program (nano/vim) renders top-aligned
-                    // with no internal scroll.  Bash: let the viewport grow with
-                    // the content so we can scroll back through history.
-                    viewport-height: root.is-alt-screen
-                        ? self.height
-                        : max(self.height, 8px + root.rows-used * root.cell-h + 8px);
+                    // Rust renders the selected scrollback window into this
+                    // fixed grid.  Keeping Slint's viewport static makes mouse
+                    // selection coordinates stable in live and history views.
+                    viewport-height: self.height;
 
                     // The terminal grid.  Each coloured run is placed with
                     // absolute coordinates derived from its (row, col) and the
@@ -449,10 +425,9 @@ export component TerminalView inherits Rectangle {
                                         // captures the pointer while pressed, so dragging
                                         // past the edge still scrolls to extend across
                                         // more than one screen.
-                                        root.vis-y = self.mouse-y + 8px + flickable.viewport-y;
-                                        if (root.vis-y < 0) {
+                                        if (self.mouse-y < 0px) {
                                             root.autoscroll-dir = -1;       // past top → older
-                                        } else if (root.vis-y > flickable.height) {
+                                        } else if (self.mouse-y > self.height) {
                                             root.autoscroll-dir = 1;        // past bottom → newer
                                         } else {
                                             root.autoscroll-dir = 0;
@@ -466,7 +441,7 @@ export component TerminalView inherits Rectangle {
                                 // In alt-screen mode (vim/nano/btop) the program
                                 // handles scroll itself — suppress our history scroll
                                 // so the full-screen UI isn't pushed out of view.
-                                if (!root.is-alt-screen) {
+                                if (!root.is-alt-screen && !root.selecting) {
                                     root.terminal-scroll(ev.delta-y > 0 ? 3 : -3);
                                 }
                                 accept

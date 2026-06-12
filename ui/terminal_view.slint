@@ -372,6 +372,10 @@ export component TerminalView inherits Rectangle {
                 flickable := Flickable {
                     visible: !root.is-rdp;
                     vertical-stretch: 1;
+                    // Keep touchpad/wheel events available to body-touch below.
+                    // We render scrollback by changing the Rust history offset,
+                    // not by letting Flickable pan its own viewport.
+                    interactive: false;
                     viewport-width: self.width;
                     // Alt-screen: lock the viewport to exactly the visible height
                     // so the full-screen program (nano/vim) renders top-aligned

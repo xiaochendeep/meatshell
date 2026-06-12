@@ -1192,6 +1192,8 @@ fn wire_session_callbacks(
                 cursor_row: 0,
                 cursor_col: 0,
                 rows_used: 0,
+                scroll_offset: 0,
+                scrollback_lines: 0,
                 is_alt_screen: false,
                 find_matches: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
                 selection: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
@@ -1344,6 +1346,8 @@ fn reset_terminal_for_connect(win: &AppWindow, tab_id: &str, session: &Session) 
                 row.cursor_row = 0;
                 row.cursor_col = 0;
                 row.rows_used = 0;
+                row.scroll_offset = 0;
+                row.scrollback_lines = 0;
                 row.is_alt_screen = false;
                 row.find_matches = ModelRc::from(Rc::new(VecModel::<TermMatch>::default()));
                 row.selection = ModelRc::from(Rc::new(VecModel::<TermMatch>::default()));
@@ -1638,6 +1642,15 @@ fn compute_find_matches(rows: &[String], query: &str) -> Vec<TermMatch> {
     out
 }
 
+fn scroll_metrics(buf: &TermBuffer) -> (i32, i32) {
+    let scrollback_lines = buf.history.len().min(i32::MAX as usize) as i32;
+    let scroll_offset = buf
+        .view_offset
+        .min(buf.history.len())
+        .min(i32::MAX as usize) as i32;
+    (scroll_offset, scrollback_lines)
+}
+
 /// Recompute spans + cursor + find/selection highlights for one tab from its
 /// current vt100 screen (respecting scrollback) and push them to the model.
 /// Used by scroll + selection callbacks (Output has its own equivalent inline).
@@ -1649,9 +1662,10 @@ fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &str) {
         let b = buf.render(); // also refreshes buf.displayed_text
         let matches = compute_find_matches(&buf.displayed_text, &buf.find_query);
         let sel = buf.selection_rects_visible(cols);
-        (b, matches, sel)
+        let (scroll_offset, scrollback_lines) = scroll_metrics(buf);
+        (b, matches, sel, scroll_offset, scrollback_lines)
     };
-    let (b, matches, sel) = data;
+    let (b, matches, sel, scroll_offset, scrollback_lines) = data;
     let spans = ModelRc::from(Rc::new(VecModel::from(b.spans)));
     let fm = ModelRc::from(Rc::new(VecModel::from(matches)));
     let sm = ModelRc::from(Rc::new(VecModel::from(sel)));
@@ -1661,6 +1675,8 @@ fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &str) {
         row.cursor_row = cr;
         row.cursor_col = cc;
         row.rows_used = ru;
+        row.scroll_offset = scroll_offset;
+        row.scrollback_lines = scrollback_lines;
         row.is_alt_screen = alt;
         row.find_matches = fm.clone();
         row.selection = sm.clone();
@@ -1864,12 +1880,13 @@ fn apply_session_event_to_window(
                     let b = buf.render(); // refreshes buf.displayed_text
                     let matches = compute_find_matches(&buf.displayed_text, &buf.find_query);
                     let sel = buf.selection_rects_visible(cols);
-                    Some((b, matches, sel))
+                    let (scroll_offset, scrollback_lines) = scroll_metrics(buf);
+                    Some((b, matches, sel, scroll_offset, scrollback_lines))
                 } else {
                     None
                 }
             };
-            if let Some((b, matches, sel)) = built {
+            if let Some((b, matches, sel, scroll_offset, scrollback_lines)) = built {
                 let spans_model: ModelRc<TermSpan> =
                     ModelRc::from(std::rc::Rc::new(VecModel::from(b.spans)));
                 let matches_model: ModelRc<TermMatch> =
@@ -1883,6 +1900,8 @@ fn apply_session_event_to_window(
                     t.cursor_row = cur_row;
                     t.cursor_col = cur_col;
                     t.rows_used = rows_used;
+                    t.scroll_offset = scroll_offset;
+                    t.scrollback_lines = scrollback_lines;
                     t.is_alt_screen = is_alt;
                     t.find_matches = matches_model.clone();
                     t.selection = sel_model.clone();
@@ -2792,6 +2811,8 @@ fn wire_key_input(
                     row.cursor_row = 0;
                     row.cursor_col = 0;
                     row.rows_used = 0;
+                    row.scroll_offset = 0;
+                    row.scrollback_lines = 0;
                 });
             }
             if let Some(h) = handles_clear.borrow().get(&tid) {
@@ -2839,6 +2860,27 @@ fn wire_key_input(
                 let max_off = buf.history.len() as i64;
                 let cur = buf.view_offset as i64;
                 buf.view_offset = (cur + delta as i64).clamp(0, max_off) as usize;
+            }
+            if let Some(win) = weak.upgrade() {
+                rebuild_tab_display(&win, &bufs_scroll, &tid);
+            }
+        });
+    }
+
+    // Scrollbar drag/click -> jump directly to an absolute scrollback offset.
+    {
+        let bufs_scroll = bufs.clone();
+        let weak = window.as_weak();
+        window.on_terminal_scroll_to(move |tab_id: SharedString, offset: i32| {
+            let tid = tab_id.to_string();
+            {
+                let mut map = bufs_scroll.lock().unwrap();
+                let Some(buf) = map.get_mut(&tid) else { return };
+                if buf.parser.screen().alternate_screen() {
+                    return;
+                }
+                let max_off = buf.history.len() as i64;
+                buf.view_offset = (offset as i64).clamp(0, max_off) as usize;
             }
             if let Some(win) = weak.upgrade() {
                 rebuild_tab_display(&win, &bufs_scroll, &tid);

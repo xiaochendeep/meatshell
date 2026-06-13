@@ -8,6 +8,7 @@ export struct SessionInfo {
     port: int,
     user: string,
     auth: string,      // "password" | "key"
+    kind: string,      // "ssh" | "serial" | "telnet" | "rdp"
     last-used: string, // ISO timestamp or "never"
     group: string,        // folder/group name ("" = ungrouped)
     group-header: string, // set on the first row of each group → render a header
@@ -155,9 +156,12 @@ component SessionRow inherits Rectangle {
             border-radius: 3px;
             background: Theme.bg-elevated;
             Text {
-                text: "\u{E875}";   // Material Icons "dns" — server/host glyph
+                text: root.session.kind == "rdp" ? "\u{E30C}"
+                    : root.session.kind == "ssh" ? "\u{E8E5}"
+                    : root.session.kind == "serial" ? "\u{E1B1}"
+                    : "\u{E8DB}";
                 font-family: "Material Icons";
-                color: Theme.text-secondary;
+                color: root.session.kind == "rdp" ? Theme.accent : Theme.text-secondary;
                 font-size: Theme.fs-sm;
                 horizontal-alignment: center;
                 vertical-alignment: center;

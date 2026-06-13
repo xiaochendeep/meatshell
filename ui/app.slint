@@ -17,7 +17,7 @@ import { SessionDialog, SessionDraft } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
 import { TerminalView, TermSpan, TermMatch } from "terminal_view.slint";
 import { SftpEntry, SftpTreeNode } from "sftp_panel.slint";
-import { ComboBox, SpinBox } from "std-widgets.slint";
+import { ComboBox, SpinBox, TextEdit } from "std-widgets.slint";
 
 export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode }
 
@@ -389,6 +389,154 @@ component AuthPromptDialog inherits Rectangle {
     }
 }
 
+component PasteTextDialog inherits Rectangle {
+    in property <string> tab-id;
+    in-out property <string> paste-text;
+
+    callback submit(string, string);
+    callback cancel();
+
+    background: #00000080;
+    changed visible => {
+        if (self.visible) {
+            paste-edit.select-all();
+        }
+    }
+
+    TouchArea { clicked => { root.cancel(); } }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: min(parent.width - 56px, 680px);
+        height: min(parent.height - 64px, 460px);
+        background: Theme.bg-panel;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000a0;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 18px;
+            spacing: 12px;
+
+            HorizontalLayout {
+                Text {
+                    text: @tr("Paste text");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-lg;
+                    font-weight: 700;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 22px;
+                    height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: paste-close-ta.has-hover ? Theme.bg-hover : transparent;
+                    paste-close-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.cancel(); }
+                    }
+                    Text {
+                        text: "\u{E5CD}";
+                        font-family: "Material Icons";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Text {
+                text: @tr("Edit the text before sending it to the session.");
+                color: Theme.text-secondary;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                background: Theme.bg-root;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: paste-edit.has-focus ? Theme.accent : Theme.border-subtle;
+                clip: true;
+
+                paste-edit := TextEdit {
+                    x: 10px;
+                    y: 8px;
+                    width: parent.width - 20px;
+                    height: parent.height - 16px;
+                    text <=> root.paste-text;
+                    font-family: Theme.term-font-family;
+                    font-size: Theme.term-font-size;
+                    wrap: word-wrap;
+                    placeholder-text: @tr("Paste or edit text here...");
+                    key-pressed(event) => {
+                        if (event.text == "\u{001b}") {
+                            root.cancel();
+                            accept
+                        } else if (event.modifiers.control
+                                && (event.text == "\u{000a}" || event.text == "\u{000d}")) {
+                            root.submit(root.tab-id, root.paste-text);
+                            accept
+                        } else {
+                            reject
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+
+                Rectangle {
+                    width: 86px;
+                    height: 34px;
+                    border-radius: Theme.radius-sm;
+                    background: paste-cancel-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
+                    paste-cancel-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.cancel(); }
+                    }
+                    Text {
+                        text: @tr("Cancel");
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-md;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    width: 94px;
+                    height: 34px;
+                    border-radius: Theme.radius-sm;
+                    background: paste-send-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    paste-send-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.submit(root.tab-id, root.paste-text); }
+                    }
+                    Text {
+                        text: @tr("Send");
+                        color: #ffffff;
+                        font-size: Theme.fs-md;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "meatshell";
     icon: @image-url("../assets/icon.png");
@@ -429,6 +577,9 @@ export component AppWindow inherits Window {
     in-out property <bool> about-open: false;     // centered About dialog
     in-out property <bool> rdp-popout-open: false; // centered RDP window
     in-out property <string> rdp-popout-tab-id;
+    in-out property <bool> paste-dialog-open: false;
+    in-out property <string> paste-dialog-tab-id;
+    in-out property <string> paste-dialog-text;
     in-out property <bool> auth-prompt-open: false;
     in-out property <string> auth-prompt-tab-id;
     in-out property <string> auth-prompt-title;
@@ -540,6 +691,8 @@ export component AppWindow inherits Window {
     // --- Clipboard callbacks ----------------------------------------------
     // Paste clipboard text into the active terminal.
     callback paste-from-clipboard(string /* tab-id */);
+    callback paste-dialog-submit(string /* tab-id */, string /* text */);
+    callback paste-dialog-cancel();
     // Copy the current terminal screen buffer to the clipboard.
     callback copy-terminal-text(string /* tab-id */);
     // Clear a session's terminal buffer (its visible screen + scrollback).
@@ -1366,6 +1519,16 @@ export component AppWindow inherits Window {
         password-text <=> root.auth-prompt-password;
         submit(tab, password) => { root.auth-prompt-submit(tab, password); }
         cancel(tab) => { root.auth-prompt-cancel(tab); }
+    }
+
+    PasteTextDialog {
+        visible: root.paste-dialog-open;
+        width: parent.width;
+        height: parent.height;
+        tab-id: root.paste-dialog-tab-id;
+        paste-text <=> root.paste-dialog-text;
+        submit(tab, text) => { root.paste-dialog-submit(tab, text); }
+        cancel => { root.paste-dialog-cancel(); }
     }
 
     // --- Modal dialog -----------------------------------------------------

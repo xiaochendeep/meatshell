@@ -5,6 +5,7 @@ export struct TabInfo {
     id: string,
     title: string,
     kind: string,   // "welcome" | "terminal"
+    session-kind: string, // "ssh" | "serial" | "telnet" | "rdp" | ""
     connected: bool,
 }
 
@@ -44,6 +45,17 @@ component SingleTab inherits Rectangle {
             border-radius: 4px;
             background: info.kind == "welcome" ? Theme.text-muted
                 : (info.connected ? Theme.success : Theme.warning);
+        }
+
+        if info.kind != "welcome" : Text {
+            text: info.session-kind == "rdp" ? "\u{E30C}"
+                : info.session-kind == "ssh" ? "\u{E8E5}"
+                : info.session-kind == "serial" ? "\u{E1B1}"
+                : "\u{E8DB}";
+            font-family: "Material Icons";
+            color: active ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
         }
 
         Text {

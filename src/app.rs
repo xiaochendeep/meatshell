@@ -73,8 +73,7 @@ use crate::config::{AuthMethod, ConfigStore, Secret, Session, SessionKind};
 use crate::i18n::t;
 use crate::sftp::{spawn_sftp, SftpHandle};
 use crate::ssh::{
-    format_mtime, format_size, spawn_session, RdpPointerEvent, SessionCommand, SessionEvent,
-    SessionHandle,
+    format_mtime, format_size, spawn_session, RdpPointerEvent, SessionEvent, SessionHandle,
 };
 use crate::system::{format_bytes_per_sec, format_mem_mib, SystemSampler, SystemSnapshot};
 
@@ -265,6 +264,7 @@ pub fn run() -> Result<()> {
         id: "welcome".into(),
         title: t("新标签页", "New tab").into(),
         kind: "welcome".into(),
+        session_kind: "".into(),
         connected: false,
     });
     window.set_tabs(ModelRc::from(tabs_model.clone()));
@@ -481,7 +481,20 @@ pub fn run() -> Result<()> {
         sftp_manual_nav.clone(),
     );
     wire_sftp_callbacks(&window, sftp_handles.clone(), sftp_manual_nav.clone());
-    wire_key_input(&window, handles.clone(), bufs.clone(), last_term_size.clone());
+    wire_key_input(
+        &window,
+        runtime.clone(),
+        handles.clone(),
+        tab_sessions.clone(),
+        tabs_model.clone(),
+        sftp_handles.clone(),
+        sftp_manual_nav.clone(),
+        tab_statuses.clone(),
+        local_snap.clone(),
+        local_net_hist.clone(),
+        bufs.clone(),
+        last_term_size.clone(),
+    );
 
     // --- System sampler (1 Hz) ------------------------------------------
     let sampler = Rc::new(Mutex::new(SystemSampler::new()));
@@ -712,6 +725,7 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
             port: s.port as i32,
             user: s.user.clone().into(),
             auth: s.auth.as_str().into(),
+            kind: s.kind.as_str().into(),
             last_used: s
                 .last_used
                 .clone()
@@ -1182,6 +1196,7 @@ fn wire_session_callbacks(
                 id: tab_id.clone().into(),
                 title: tab_title.into(),
                 kind: "terminal".into(),
+                session_kind: session.kind.as_str().into(),
                 connected: false,
             });
             terminals_model.push(TerminalState {
@@ -1924,7 +1939,15 @@ fn apply_session_event_to_window(
         }
         SessionEvent::Closed(reason) => {
             update_tab(&|t| t.connected = false);
-            update_terminal(&|t| t.status = format!("{} — {reason}", crate::i18n::t("已断开", "Disconnected")).into());
+            update_terminal(&|t| {
+                t.status = format!(
+                    "{} — {} — {}",
+                    crate::i18n::t("已断开", "Disconnected"),
+                    reason,
+                    crate::i18n::t("按 Enter 重连", "press Enter to reconnect")
+                )
+                .into()
+            });
             if win.get_rdp_popout_tab_id().as_str() == tab_id {
                 win.set_rdp_popout_open(false);
             }
@@ -2376,20 +2399,58 @@ fn wire_sftp_callbacks(
 
 fn wire_key_input(
     window: &AppWindow,
+    runtime: Arc<Runtime>,
     handles: Rc<RefCell<HashMap<String, SessionHandle>>>,
+    tab_sessions: TabSessions,
+    tabs_model: Rc<VecModel<TabInfo>>,
+    sftp_handles: SftpHandles,
+    sftp_manual_nav: SftpManualNav,
+    tab_statuses: TabStatuses,
+    local_snap: LocalSnap,
+    local_net_hist: NetHist,
     bufs: TermBuffers,
     last_term_size: Arc<Mutex<(u32, u32)>>,
 ) {
     // Forward each keystroke as raw bytes to the SSH PTY. The server's bash /
     // readline handles echo, history (↑↓), Tab completion, Ctrl+C, etc.
     {
+        let weak = window.as_weak();
+        let runtime = runtime.clone();
         let handles = handles.clone();
+        let tab_sessions = tab_sessions.clone();
+        let tabs_model = tabs_model.clone();
+        let sftp_handles = sftp_handles.clone();
+        let sftp_manual_nav = sftp_manual_nav.clone();
+        let tab_statuses = tab_statuses.clone();
+        let local_snap = local_snap.clone();
+        let local_net_hist = local_net_hist.clone();
         let bufs = bufs.clone();
+        let last_term_size = last_term_size.clone();
         // Shared timestamp: the last time the Shift key alone was pressed
         // (key="", shift=true).  Used by the time-based Backspace filter below.
         let last_shift_time: Arc<Mutex<Option<std::time::Instant>>> =
             Arc::new(Mutex::new(None));
         window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
+            if !ctrl && !alt && is_enter_key(key.as_str()) {
+                if reconnect_tab_if_disconnected(
+                    &weak,
+                    &runtime,
+                    &handles,
+                    &sftp_handles,
+                    &sftp_manual_nav,
+                    &tab_statuses,
+                    &local_snap,
+                    &local_net_hist,
+                    &bufs,
+                    &last_term_size,
+                    &tabs_model,
+                    &tab_sessions,
+                    tab_id.as_str(),
+                ) {
+                    return;
+                }
+            }
+
             // Check whether the remote PTY switched to application cursor mode
             // (DECCKM, set by nano/vim via \x1b[?1h). In that mode the terminal
             // must send \x1bOA/B/C/D instead of \x1b[A/B/C/D.
@@ -2601,9 +2662,39 @@ fn wire_key_input(
     }
 
     {
+        let weak = window.as_weak();
+        let runtime = runtime.clone();
         let handles = handles.clone();
+        let tab_sessions = tab_sessions.clone();
+        let tabs_model = tabs_model.clone();
+        let sftp_handles = sftp_handles.clone();
+        let sftp_manual_nav = sftp_manual_nav.clone();
+        let tab_statuses = tab_statuses.clone();
+        let local_snap = local_snap.clone();
+        let local_net_hist = local_net_hist.clone();
+        let bufs = bufs.clone();
+        let last_term_size = last_term_size.clone();
         window.on_rdp_key(
             move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
+                if !ctrl && !alt && is_enter_key(key.as_str()) {
+                    if reconnect_tab_if_disconnected(
+                        &weak,
+                        &runtime,
+                        &handles,
+                        &sftp_handles,
+                        &sftp_manual_nav,
+                        &tab_statuses,
+                        &local_snap,
+                        &local_net_hist,
+                        &bufs,
+                        &last_term_size,
+                        &tabs_model,
+                        &tab_sessions,
+                        tab_id.as_str(),
+                    ) {
+                        return;
+                    }
+                }
                 if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
                     handle.send_rdp_key(key.to_string(), ctrl, alt, shift);
                 }
@@ -2753,31 +2844,57 @@ fn wire_key_input(
         });
     }
 
-    // Middle-click / Ctrl+Shift+V: paste clipboard text into PTY.
+    // Middle-click / Ctrl+V: open an editable paste buffer before sending.
+    {
+        let weak = window.as_weak();
+        window.on_paste_from_clipboard(move |tab_id: SharedString| {
+            let weak = weak.clone();
+            let tab_id = tab_id.to_string();
+            std::thread::spawn(move || {
+                let text = match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        tracing::warn!("paste_from_clipboard: clipboard error: {}", e);
+                        String::new()
+                    }
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = weak.upgrade() {
+                        win.set_paste_dialog_tab_id(tab_id.into());
+                        win.set_paste_dialog_text(text.into());
+                        win.set_paste_dialog_open(true);
+                    }
+                });
+            });
+        });
+    }
+
     {
         let handles = handles.clone();
-        window.on_paste_from_clipboard(move |tab_id: SharedString| {
-            // Clone the (Send) command sender for this tab so the clipboard read
-            // can run off the UI thread.  Reading arboard on the event-loop
-            // thread is what froze the app on middle-click / paste — see the
-            // copy handler above for the deadlock explanation.
-            let sender = handles
-                .borrow()
-                .get(tab_id.as_str())
-                .map(|h| h.commands.clone());
-            let Some(sender) = sender else { return };
-            std::thread::spawn(move || {
-                match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
-                    Ok(text) => {
-                        // Normalise line endings to a single CR so multi-line and
-                        // backslash-continued commands paste correctly (see the
-                        // function doc for the failure mode this prevents).
-                        let bytes = normalize_pasted_newlines(&text).into_bytes();
-                        let _ = sender.send(SessionCommand::RawInput(bytes));
-                    }
-                    Err(e) => tracing::warn!("paste_from_clipboard: clipboard error: {}", e),
+        let weak = window.as_weak();
+        window.on_paste_dialog_submit(move |tab_id: SharedString, text: SharedString| {
+            if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
+                let bytes = normalize_pasted_newlines(text.as_str()).into_bytes();
+                if !bytes.is_empty() {
+                    handle.send_raw(bytes);
                 }
-            });
+            }
+            if let Some(win) = weak.upgrade() {
+                win.set_paste_dialog_open(false);
+                win.set_paste_dialog_text("".into());
+                win.set_paste_dialog_tab_id("".into());
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        window.on_paste_dialog_cancel(move || {
+            if let Some(win) = weak.upgrade() {
+                win.set_paste_dialog_open(false);
+                win.set_paste_dialog_text("".into());
+                win.set_paste_dialog_tab_id("".into());
+            }
         });
     }
 
@@ -3033,6 +3150,60 @@ fn set_terminal_row(win: &AppWindow, tab_id: &str, mutator: impl Fn(&mut Termina
             }
         }
     }
+}
+
+fn tab_is_disconnected(tabs_model: &VecModel<TabInfo>, tab_id: &str) -> bool {
+    for i in 0..tabs_model.row_count() {
+        if let Some(row) = tabs_model.row_data(i) {
+            if row.id.as_str() == tab_id {
+                return row.kind.as_str() == "terminal" && !row.connected;
+            }
+        }
+    }
+    false
+}
+
+fn is_enter_key(key: &str) -> bool {
+    key == "\r" || key == "\n" || key == "\u{000d}" || key == "\u{000a}"
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconnect_tab_if_disconnected(
+    weak: &slint::Weak<AppWindow>,
+    runtime: &Arc<Runtime>,
+    handles: &Rc<RefCell<HashMap<String, SessionHandle>>>,
+    sftp_handles: &SftpHandles,
+    sftp_manual_nav: &SftpManualNav,
+    tab_statuses: &TabStatuses,
+    local_snap: &LocalSnap,
+    local_net_hist: &NetHist,
+    bufs: &TermBuffers,
+    last_term_size: &Arc<Mutex<(u32, u32)>>,
+    tabs_model: &Rc<VecModel<TabInfo>>,
+    tab_sessions: &TabSessions,
+    tab_id: &str,
+) -> bool {
+    if !tab_is_disconnected(tabs_model, tab_id) {
+        return false;
+    }
+    let Some(session) = tab_sessions.borrow().get(tab_id).cloned() else {
+        return false;
+    };
+    start_tab_transport(
+        weak.clone(),
+        runtime.clone(),
+        handles.clone(),
+        sftp_handles.clone(),
+        sftp_manual_nav.clone(),
+        tab_statuses.clone(),
+        local_snap.clone(),
+        local_net_hist.clone(),
+        bufs.clone(),
+        last_term_size.clone(),
+        tab_id.to_string(),
+        session,
+    );
+    true
 }
 
 /// Convert a Slint `KeyEvent.text` + modifier flags into the byte sequence
@@ -4095,6 +4266,14 @@ mod key_tests {
         assert_eq!(normalize_pasted_newlines("a\rb"), "a\rb");
         // No newlines → unchanged.
         assert_eq!(normalize_pasted_newlines("echo hi"), "echo hi");
+    }
+
+    #[test]
+    fn enter_key_variants_are_recognized_for_reconnect() {
+        assert!(is_enter_key("\r"));
+        assert!(is_enter_key("\n"));
+        assert!(!is_enter_key("x"));
+        assert!(!is_enter_key(""));
     }
 }
 

@@ -27,6 +27,48 @@ const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 800;
 const READ_POLL: Duration = Duration::from_millis(50);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RdpSecurityMode {
+    Negotiated,
+    Tls,
+    Legacy,
+}
+
+impl RdpSecurityMode {
+    const ATTEMPTS: [RdpSecurityMode; 3] = [
+        RdpSecurityMode::Negotiated,
+        RdpSecurityMode::Tls,
+        RdpSecurityMode::Legacy,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            RdpSecurityMode::Negotiated => "NLA/TLS",
+            RdpSecurityMode::Tls => "TLS-only",
+            RdpSecurityMode::Legacy => "Standard RDP",
+        }
+    }
+
+    fn status(self) -> &'static str {
+        match self {
+            RdpSecurityMode::Negotiated => t("RDP 协议协商：NLA/TLS", "RDP negotiation: NLA/TLS"),
+            RdpSecurityMode::Tls => t("RDP 协议协商：TLS-only", "RDP negotiation: TLS-only"),
+            RdpSecurityMode::Legacy => t(
+                "RDP 协议协商：旧版 Standard RDP",
+                "RDP negotiation: legacy Standard RDP",
+            ),
+        }
+    }
+
+    fn use_nla(self) -> bool {
+        matches!(self, RdpSecurityMode::Negotiated)
+    }
+
+    fn force_legacy(self) -> bool {
+        matches!(self, RdpSecurityMode::Legacy)
+    }
+}
+
 pub fn spawn_rdp_session(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
@@ -137,25 +179,9 @@ fn run_rdp_blocking(
     events: UnboundedSender<SessionEvent>,
     runtime_handle: tokio::runtime::Handle,
 ) -> Result<()> {
-    let connected = match connect_rdp_client(&session, stream, false) {
-        Ok(connected) => connected,
-        Err(err) if should_retry_legacy_rdp(&err) => {
-            let _ = events.send(SessionEvent::Status(format!(
-                "{} {}:{}",
-                t("RDP 服务端只接受旧安全层，正在重试", "RDP server requires legacy security; retrying"),
-                host,
-                port
-            )));
-            let retry_stream = runtime_handle
-                .block_on(connect_transport(&session, &host, port, &events))?
-                .into_std()
-                .context("convert legacy RDP stream")?;
-            let retry_stream = prepare_rdp_stream(retry_stream)?;
-            connect_rdp_client(&session, retry_stream, true)
-                .with_context(|| format!("RDP legacy connect {host}:{port}"))?
-        }
-        Err(err) => return Err(err).with_context(|| format!("RDP connect {host}:{port}")),
-    };
+    let (connected, security_mode) =
+        connect_rdp_with_fallback(&session, &host, port, stream, &events, &runtime_handle)
+            .with_context(|| format!("RDP connect {host}:{port}"))?;
 
     #[cfg(unix)]
     let readiness_probe = connected.readiness_probe;
@@ -165,10 +191,11 @@ fn run_rdp_blocking(
 
     let _ = events.send(SessionEvent::Connected);
     let _ = events.send(SessionEvent::Status(format!(
-        "{} {}:{}",
+        "{} {}:{} ({})",
         t("RDP 已连接", "RDP connected"),
         host,
-        port
+        port,
+        security_mode.label()
     )));
 
     let mut frame = vec![0u8; usize::from(DEFAULT_WIDTH) * usize::from(DEFAULT_HEIGHT) * 4];
@@ -266,10 +293,73 @@ struct ConnectedRdp {
     readiness_probe: StdTcpStream,
 }
 
+fn connect_rdp_with_fallback(
+    session: &Session,
+    host: &str,
+    port: u16,
+    first_stream: StdTcpStream,
+    events: &UnboundedSender<SessionEvent>,
+    runtime_handle: &tokio::runtime::Handle,
+) -> Result<(ConnectedRdp, RdpSecurityMode)> {
+    let mut first_stream = Some(first_stream);
+    let mut failures = Vec::new();
+
+    for mode in RdpSecurityMode::ATTEMPTS {
+        let _ = events.send(SessionEvent::Status(format!(
+            "{} {}:{}",
+            mode.status(),
+            host,
+            port
+        )));
+
+        let stream = match first_stream.take() {
+            Some(stream) => stream,
+            None => open_rdp_retry_stream(session, host, port, events, runtime_handle)
+                .with_context(|| format!("open RDP retry stream for {}", mode.label()))?,
+        };
+
+        match connect_rdp_client(session, stream, mode) {
+            Ok(client) => return Ok((client, mode)),
+            Err(err) => {
+                failures.push(format!("{}: {err:#}", mode.label()));
+                let _ = events.send(SessionEvent::Status(format!(
+                    "{} {}，{}",
+                    t("RDP 模式失败", "RDP mode failed"),
+                    mode.label(),
+                    t("继续尝试兼容模式", "trying next compatibility mode")
+                )));
+            }
+        }
+    }
+
+    bail!(
+        "{}: {}",
+        t(
+            "RDP 所有兼容模式都失败",
+            "all RDP compatibility modes failed"
+        ),
+        failures.join(" | ")
+    )
+}
+
+fn open_rdp_retry_stream(
+    session: &Session,
+    host: &str,
+    port: u16,
+    events: &UnboundedSender<SessionEvent>,
+    runtime_handle: &tokio::runtime::Handle,
+) -> Result<StdTcpStream> {
+    let stream = runtime_handle
+        .block_on(connect_transport(session, host, port, events))?
+        .into_std()
+        .context("convert RDP retry stream")?;
+    prepare_rdp_stream(stream)
+}
+
 fn connect_rdp_client(
     session: &Session,
     stream: StdTcpStream,
-    legacy_security: bool,
+    security_mode: RdpSecurityMode,
 ) -> Result<ConnectedRdp> {
     #[cfg(unix)]
     let readiness_probe = stream
@@ -283,8 +373,8 @@ fn connect_rdp_client(
         .name("meatshell".to_string())
         .auto_logon(true)
         .check_certificate(false)
-        .use_nla(!legacy_security)
-        .force_legacy_rdp(legacy_security);
+        .use_nla(security_mode.use_nla())
+        .force_legacy_rdp(security_mode.force_legacy());
 
     let client = connector.connect(stream).map_err(rdp_error)?;
     Ok(ConnectedRdp {
@@ -292,12 +382,6 @@ fn connect_rdp_client(
         #[cfg(unix)]
         readiness_probe,
     })
-}
-
-fn should_retry_legacy_rdp(err: &anyhow::Error) -> bool {
-    let message = format!("{err:#}");
-    message.contains("MCS: Disconnect Provider Ultimatum")
-        || message.contains("legacy Standard RDP Security")
 }
 
 #[cfg(unix)]
@@ -349,7 +433,9 @@ fn rdp_error(err: RdpError) -> anyhow::Error {
 fn split_rdp_user(user: &str) -> (String, String) {
     let user = user.trim();
     if let Some((domain, name)) = user.split_once('\\') {
-        (domain.trim().to_string(), name.trim().to_string())
+        let domain = domain.trim();
+        let domain = if domain == "." { "" } else { domain };
+        (domain.to_string(), name.trim().to_string())
     } else {
         (String::new(), user.to_string())
     }
@@ -606,8 +692,33 @@ mod tests {
 
     #[test]
     fn splits_windows_domain_user() {
-        assert_eq!(split_rdp_user("ACME\\alice"), ("ACME".to_string(), "alice".to_string()));
-        assert_eq!(split_rdp_user("alice"), (String::new(), "alice".to_string()));
+        assert_eq!(
+            split_rdp_user("ACME\\alice"),
+            ("ACME".to_string(), "alice".to_string())
+        );
+        assert_eq!(
+            split_rdp_user(".\\administrator"),
+            (String::new(), "administrator".to_string())
+        );
+        assert_eq!(
+            split_rdp_user("alice"),
+            (String::new(), "alice".to_string())
+        );
+    }
+
+    #[test]
+    fn defines_rdp_security_attempt_order() {
+        assert_eq!(
+            RdpSecurityMode::ATTEMPTS,
+            [
+                RdpSecurityMode::Negotiated,
+                RdpSecurityMode::Tls,
+                RdpSecurityMode::Legacy
+            ]
+        );
+        assert!(RdpSecurityMode::Negotiated.use_nla());
+        assert!(!RdpSecurityMode::Tls.use_nla());
+        assert!(RdpSecurityMode::Legacy.force_legacy());
     }
 
     #[test]

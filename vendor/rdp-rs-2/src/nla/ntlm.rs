@@ -240,6 +240,34 @@ fn read_target_info(data: &[u8]) -> RdpResult<HashMap<AvId, Vec<u8>>> {
     return Ok(result);
 }
 
+fn decode_target_info_string(data: &[u8]) -> Option<String> {
+    if data.is_empty() || data.len() % 2 != 0 {
+        return None;
+    }
+    let utf16 = data
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    let decoded = String::from_utf16(&utf16).ok()?;
+    let decoded = decoded.trim_matches('\0').trim().to_string();
+    if decoded.is_empty() {
+        None
+    } else {
+        Some(decoded)
+    }
+}
+
+fn default_domain_from_target_info(target_info: &HashMap<AvId, Vec<u8>>) -> Option<String> {
+    [
+        AvId::MsvAvNbDomainName,
+        AvId::MsvAvNbComputerName,
+        AvId::MsvAvDnsDomainName,
+        AvId::MsvAvDnsComputerName,
+    ]
+    .iter()
+    .find_map(|id| target_info.get(id).and_then(|value| decode_target_info_string(value)))
+}
+
 /// Zero filled array
 ///
 /// This is a convenience method
@@ -556,6 +584,14 @@ impl AuthenticationProtocol  for Ntlm {
             panic!("no timestamp available")
         };
 
+        if self.domain.trim().is_empty() {
+            if let Some(domain) = default_domain_from_target_info(&target_info) {
+                self.domain = domain;
+                self.response_key_nt = ntowfv2(&self.password, &self.user, &self.domain);
+                self.response_key_lm = lmowfv2(&self.password, &self.user, &self.domain);
+            }
+        }
+
         // generate client challenge
         let client_challenge = random(8);
 
@@ -766,6 +802,21 @@ mod test {
     #[test]
     fn test_lmowfv2() {
         assert_eq!(lmowfv2(&"foo".to_string(), &"user".to_string(), &"domain".to_string()), ntowfv2(&"foo".to_string(), &"user".to_string(), &"domain".to_string()))
+    }
+
+    #[test]
+    fn test_default_domain_from_target_info() {
+        let mut target_info = HashMap::new();
+        target_info.insert(AvId::MsvAvNbComputerName, unicode(&"WINBOX".to_string()));
+        target_info.insert(AvId::MsvAvNbDomainName, unicode(&"ACME".to_string()));
+
+        assert_eq!(default_domain_from_target_info(&target_info), Some("ACME".to_string()));
+    }
+
+    #[test]
+    fn test_decode_target_info_string_rejects_odd_bytes() {
+        assert_eq!(decode_target_info_string(&[0x41, 0x00]), Some("A".to_string()));
+        assert_eq!(decode_target_info_string(&[0x41]), None);
     }
 
     /// Test compute response v2 function

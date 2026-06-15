@@ -252,6 +252,8 @@ impl Connector {
                 self.blank_creds
             )?
         };
+        let selected_protocol = x224.get_selected_protocols();
+        let auto_logon = self.auto_logon && !matches!(selected_protocol, x224::Protocols::ProtocolHybrid | x224::Protocols::ProtocolHybridEx);
 
         // Create MCS layer and connect it
         let mut mcs = mcs::Client::new(x224);
@@ -263,7 +265,7 @@ impl Connector {
                 &"".to_string(),
                 &"".to_string(),
                 &"".to_string(),
-                self.auto_logon
+                auto_logon
             )?;
         } else {
             sec::connect(
@@ -271,7 +273,7 @@ impl Connector {
                 &self.domain,
                 &self.username,
                 &self.password,
-                self.auto_logon
+                auto_logon
             )?;
         }
 

@@ -295,10 +295,16 @@ impl<S: Read + Write> Client<S> {
         let message = self.x224.read()?;
         match message {
             tpkt::Payload::Raw(mut payload) => {
-                 let mut header = mcs_pdu_header(None, None);
+                let mut header = mcs_pdu_header(None, None);
                 header.read(&mut payload)?;
                 if header >> 2 == DomainMCSPDU::DisconnectProviderUltimatum as u8 {
-                    return Err(Error::RdpError(RdpError::new(RdpErrorKind::Disconnect, "MCS: Disconnect Provider Ultimatum")));
+                    let reason = per::read_enumerates(&mut payload)
+                        .map(|reason| format!(" (reason={})", reason))
+                        .unwrap_or_default();
+                    return Err(Error::RdpError(RdpError::new(
+                        RdpErrorKind::Disconnect,
+                        &format!("MCS: Disconnect Provider Ultimatum{}", reason)
+                    )));
                 }
 
                 if header >> 2 != DomainMCSPDU::SendDataIndication as u8 {

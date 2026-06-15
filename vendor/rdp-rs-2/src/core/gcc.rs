@@ -23,8 +23,8 @@ pub enum Version {
 impl From<u32> for Version {
     fn from(e: u32) -> Self {
         match e {
-            0x00080001 => Version::RdpVersion5plus,
-            0x00080004 => Version::RdpVersion,
+            0x00080001 => Version::RdpVersion,
+            0x00080004 => Version::RdpVersion5plus,
             _ => Version::Unknown
         }
     }
@@ -376,4 +376,16 @@ pub fn read_conference_create_response(cc_response: &mut dyn Read) -> RdpResult<
         channel_ids: cast!(DataType::Trame, result[&MessageType::ScNet]["channelIdArray"])?.into_iter().map(|x| cast!(DataType::U16, x).unwrap()).collect(),
         rdp_version: Version::from(cast!(DataType::U32, result[&MessageType::ScCore]["rdpVersion"])?)
     })
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn maps_wire_rdp_versions_correctly() {
+        assert!(Version::from(0x00080001) == Version::RdpVersion);
+        assert!(Version::from(0x00080004) == Version::RdpVersion5plus);
+        assert!(Version::from(0x00080005) == Version::Unknown);
+    }
 }
